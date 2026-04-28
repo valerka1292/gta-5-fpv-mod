@@ -79,6 +79,10 @@ namespace FpvDroneMod
         private static readonly Stopwatch _clock  = new Stopwatch();
         private static double _lastClockSec       = 0.0;
 
+        // Win32 API для явной загрузки нативных DLL
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadLibrary(string lpFileName);
+
         public static void Init()
         {
             try
@@ -472,7 +476,7 @@ namespace FpvDroneMod
             }
         }
 
-        // Извлечь нативные DLL во временную папку и загрузить через Bass.Load
+        // Извлечь нативные DLL во временную папку и загрузить через Win32 LoadLibrary
         private static void ExtractAndLoadNative()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "FpvDroneMod");
@@ -481,6 +485,8 @@ namespace FpvDroneMod
             foreach (string dllName in new[] { "bass.dll", "bass_fx.dll" })
             {
                 string destPath = Path.Combine(tempDir, dllName);
+                
+                // Извлечь из ресурсов если ещё не извлечено
                 if (!File.Exists(destPath))
                 {
                     byte[] data = ReadEmbeddedResource(dllName);
@@ -488,11 +494,17 @@ namespace FpvDroneMod
                         throw new Exception($"AudioManager: embedded native dll not found: {dllName}");
                     File.WriteAllBytes(destPath, data);
                 }
+                
+                // Явно загрузить через Win32 API
+                IntPtr handle = LoadLibrary(destPath);
+                if (handle == IntPtr.Zero)
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    throw new Exception($"AudioManager: LoadLibrary failed for {dllName}, Win32 error {err}");
+                }
             }
-
-            // Загрузить нативные dll до Bass.Init()
-            Bass.Load(Path.Combine(tempDir, "bass.dll"));
-            BassFx.Load(Path.Combine(tempDir, "bass_fx.dll"));
+            
+            Log.Info("AudioManager: native DLLs extracted and loaded from " + tempDir);
         }
 
         private static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
