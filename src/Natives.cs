@@ -138,22 +138,34 @@ namespace FpvDroneMod
                 explosionType, damageScale, audible, invisible, cameraShake);
         }
 
-        // APPLY_FORCE_TO_ENTITY — used to add a Battlefield-style impulse to
-        // nearby vehicles after detonation so trucks actually flip on a
-        // high-speed kamikaze hit, even with a low-power explosion type.
-        // forceType=1 = impulse-change-relative-to-direction.
-        public static void ApplyForceToEntity(Entity e, Vector3 force, Vector3 offset, int forceType)
+        // APPLY_FORCE_TO_ENTITY — Battlefield-style impulse on nearby
+        // vehicles after detonation. forceType=1 = impulse-change-by-direction.
+        //   force        — in WORLD space (isDirectionRel=false, isForceRel=false).
+        //   localOffset  — point of application in the entity's LOCAL space
+        //                  (computed via GetOffsetFromEntityGivenWorldCoords).
+        //                  Non-zero offset is what gives the engine torque so
+        //                  vehicles actually rotate/flip instead of just sliding.
+        public static void ApplyForceToEntity(Entity e, Vector3 force, Vector3 localOffset, int forceType)
         {
             Function.Call(Hash.APPLY_FORCE_TO_ENTITY,
                 e.Handle, forceType,
                 force.X, force.Y, force.Z,
-                offset.X, offset.Y, offset.Z,
+                localOffset.X, localOffset.Y, localOffset.Z,
                 0,           // boneIndex
-                false,       // isDirectionRel
-                true,        // ignoreUpVec
-                true,        // isForceRel
+                false,       // isDirectionRel — force vector is world-space
+                false,       // ignoreUpVec
+                false,       // isForceRel — force vector is world-space
                 false,       // p12
                 true);       // p13
+        }
+
+        // GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS — converts a world-space
+        // point to the entity's local-space offset. Required for properly
+        // applying torque-generating force at the impact point.
+        public static Vector3 GetOffsetFromEntityGivenWorldCoords(Entity e, Vector3 worldPos)
+        {
+            return Function.Call<Vector3>(Hash.GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS,
+                e.Handle, worldPos.X, worldPos.Y, worldPos.Z);
         }
     }
 }

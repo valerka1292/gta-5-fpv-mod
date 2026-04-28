@@ -67,8 +67,27 @@ namespace FpvDroneMod
             s.Spawn = ped.Position;
             s.P = ped.Position + new Vector3(0, 0, Config.SpawnHeight);
             s.V = Vector3.Zero;
-            s.Psi = ped.Heading * MathF.Deg2Rad;
-            s.Theta = -0.3f;
+            // Spawn drone aligned with the player's CAMERA, not their body
+            // heading. The player's torso may be facing one direction while
+            // the camera looks somewhere else — and the drone should fly
+            // toward where the player is *looking*. (Audit #7 fix.)
+            //
+            // GTA heading convention is counter-clockwise from +Y north;
+            // GameplayCamera.Rotation.Z is the same convention with the
+            // same sign, so we just convert deg→rad.
+            //
+            // Pitch (Theta): GTA Camera.Rotation.X is positive when looking
+            // up, negative when looking down — same sign convention as our
+            // drone Theta where Theta>0 means F.z>0 (nose up). So no
+            // sign flip needed here.
+            float camYawDeg = GameplayCamera.Rotation.Z;
+            float camPitchDeg = GameplayCamera.Rotation.X;
+            s.Psi = camYawDeg * MathF.Deg2Rad;
+            s.Theta = camPitchDeg * MathF.Deg2Rad;
+            // Clamp initial pitch into the configured cinematic range so a
+            // player aiming straight up/down doesn't break the integrator.
+            if (s.Theta < -1.4f) s.Theta = -1.4f;
+            if (s.Theta >  1.4f) s.Theta =  1.4f;
             s.PhiCam = 0.0f;
             s.T = Config.TInitial;
             s.B = Config.BInitial;

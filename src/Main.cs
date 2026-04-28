@@ -41,6 +41,8 @@ namespace FpvDroneMod
 
         public Main()
         {
+            Log.Init();
+            Log.Info("FPV Drone Mod starting up");
             Tick    += OnTick;
             KeyDown += OnKeyDown;
             Aborted += OnAborted;
@@ -89,19 +91,34 @@ namespace FpvDroneMod
         {
             if (!_flying) return;
 
-            try { _slowMo.ForceAbort(); } catch { }
-            Effects.StopAll();
+            try { _slowMo.ForceAbort(); }
+            catch (Exception ex) { Log.Error("EndFlight: SlowMo.ForceAbort failed", ex); }
 
+            try { Effects.StopAll(); }
+            catch (Exception ex) { Log.Error("EndFlight: Effects.StopAll failed", ex); }
+
+            try
+            {
 #pragma warning disable CS0618
-            World.RenderingCamera = null;
+                World.RenderingCamera = null;
 #pragma warning restore CS0618
+            }
+            catch (Exception ex) { Log.Error("EndFlight: clearing RenderingCamera failed", ex); }
+
             if (_fpvCam != null && _fpvCam.Exists())
             {
-                try { _fpvCam.Delete(); } catch { }
+                try { _fpvCam.Delete(); }
+                catch (Exception ex) { Log.Error("EndFlight: fpvCam.Delete failed", ex); }
             }
             _fpvCam = null;
 
-            try { PlayerGuard.OnExit(Game.Player, Game.Player.Character, _state); } catch { }
+            // Final defence: Game.TimeScale must always come back to 1.0 so
+            // the player isn't permanently stuck in slow motion.
+            try { Game.TimeScale = 1.0f; }
+            catch (Exception ex) { Log.Error("EndFlight: TimeScale reset failed", ex); }
+
+            try { PlayerGuard.OnExit(Game.Player, Game.Player.Character, _state); }
+            catch (Exception ex) { Log.Error("EndFlight: PlayerGuard.OnExit failed", ex); }
 
             _flying = false;
         }
@@ -150,10 +167,15 @@ namespace FpvDroneMod
         private void OnAborted(object sender, EventArgs e)
         {
             // Critical: even on abort, restore world state.
-            try { Game.TimeScale = 1.0f; } catch { }
-            try { _slowMo.ForceAbort(); } catch { }
-            try { Effects.StopAll(); } catch { }
-            try { EndFlight(); } catch { }
+            Log.Warn("Main.OnAborted called — restoring world state");
+            try { Game.TimeScale = 1.0f; }
+            catch (Exception ex) { Log.Error("Aborted: TimeScale reset failed", ex); }
+            try { _slowMo.ForceAbort(); }
+            catch (Exception ex) { Log.Error("Aborted: SlowMo.ForceAbort failed", ex); }
+            try { Effects.StopAll(); }
+            catch (Exception ex) { Log.Error("Aborted: Effects.StopAll failed", ex); }
+            try { EndFlight(); }
+            catch (Exception ex) { Log.Error("Aborted: EndFlight failed", ex); }
         }
 
         // ---- Per-frame loop (spec section 13) ----
@@ -306,13 +328,25 @@ namespace FpvDroneMod
                 // and vehicle-impulse can scale by how hard we actually hit.
                 float impactSpeed = _state.V.Length();
 
+                // Capture pre-snap camera position so SlowMoFinal can start
+                // its cinematic interpolation from where the player was
+                // *actually* looking the frame before impact, instead of
+                // from the snapped-to-wall position. Without this the
+                // first slow-mo frame shows the texture in the player's
+                // face and then the camera "rubber-bands" backward — felt
+                // like a glitch.
+                Vector3 fpvCamPrePos = (_fpvCam != null && _fpvCam.Exists())
+                    ? _fpvCam.Position
+                    : _state.P;
+
                 _state.P = hit - approachDir * Config.SnapInset;
                 _state.V = Vector3.Zero;
                 if (_fpvCam != null && _fpvCam.Exists())
                     _fpvCam.Position = _state.P;
 
                 _state.ImpactImminent = true;
-                _slowMo.Begin(_state, _fpvCam, hit, approachDir, impactSpeed, ped);
+                _slowMo.Begin(_state, _fpvCam, hit, approachDir, impactSpeed,
+                              fpvCamPrePos, ped);
                 return;
             }
 

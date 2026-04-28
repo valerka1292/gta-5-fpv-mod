@@ -47,13 +47,16 @@ namespace FpvDroneMod
         // co-located with the FPV camera so the cut is invisible, then begins
         // ramping time scale + interpolating the cinematic anchor.
         public void Begin(DroneState s, Camera fpvCam, Vector3 hitPoint,
-                          Vector3 approachDir, float impactSpeed, Ped ignorePed)
+                          Vector3 approachDir, float impactSpeed,
+                          Vector3 fpvCamPrePos, Ped ignorePed)
         {
             _hitPoint = hitPoint;
             _approachDir = approachDir;
             _impactSpeed = impactSpeed;
             _exploded = false;
-            _camStart = fpvCam.Position;
+            // Use the pre-snap FPV camera position so the cinematic does
+            // *not* start from the inside of a wall.
+            _camStart = fpvCamPrePos;
             _camTarget = ChooseCinematicCameraPosition(s, hitPoint, ignorePed);
 
 #pragma warning disable CS0618 // see Main.cs note on RenderingCamera

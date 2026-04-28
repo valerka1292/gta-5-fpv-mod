@@ -65,14 +65,33 @@ namespace FpvDroneMod
             Vector3 bestHit = s.P;
             bool didHit = false;
 
+            // Extend each ray's origin one DroneRadius BEHIND prevP along the
+            // sweep direction. This handles the audit-#6 edge case: if the
+            // drone was already partially clipping into thin geometry
+            // (fence, vehicle bodywork) on the previous frame, prevP could
+            // be *inside* a mesh — and World.Raycast from inside a closed
+            // mesh returns DidHit=false in RAGE. Starting the ray a bit
+            // farther back guarantees the origin is outside any
+            // sub-DroneRadius-thick obstacle.
+            float backExtend = Config.DroneRadius;
+            Vector3 originBase = prevP - dir * backExtend;
+
             for (int i = 0; i < offsets.Length; i++)
             {
-                Vector3 origin = prevP + offsets[i];
+                Vector3 origin = originBase + offsets[i];
                 Vector3 endPt  = s.P + offsets[i] + dir * Config.ContactMargin;
 
                 // Everything (511) so vehicles/peds/objects/map/glass all hit.
                 var ray = World.Raycast(origin, endPt, IntersectFlags.Everything, ignorePed);
                 if (!ray.DidHit) continue;
+
+                // Reject hits that lie behind prevP along the travel
+                // direction — those are walls the drone has already passed
+                // and would be false positives because we extended origin
+                // backward by DroneRadius.
+                Vector3 fromPrev = ray.HitPosition - prevP;
+                float along = Vector3.Dot(fromPrev, dir);
+                if (along < -0.05f) continue;
 
                 float d = (ray.HitPosition - origin).Length();
                 if (d < bestDist)
@@ -161,7 +180,16 @@ namespace FpvDroneMod
                                         * speed
                                         * falloff;
 
-                        Natives.ApplyForceToEntity(v, force, Vector3.Zero, forceType: 1);
+                        // Apply force at the actual hit point (in world
+                        // space, then converted to entity-local via
+                        // GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS) so the
+                        // engine generates real torque — a side hit makes
+                        // the truck flip on its long axis, a top hit slams
+                        // the roof down, etc. Without this, force at
+                        // entity.Position is pure translation and trucks
+                        // just glide instead of rolling.
+                        Vector3 localOffset = Natives.GetOffsetFromEntityGivenWorldCoords(v, hitPoint);
+                        Natives.ApplyForceToEntity(v, force, localOffset, forceType: 1);
                     }
                 }
             }
