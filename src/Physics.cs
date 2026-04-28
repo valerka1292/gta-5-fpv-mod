@@ -53,6 +53,7 @@ namespace FpvDroneMod
             s.Theta = Clamp(s.Theta + dTheta, -Config.ThetaMax, Config.ThetaMax);
 
             // Optional angle-mode style auto-level when pitch input is idle.
+            // Disabled by default (AutoLevelStrength = 0) for camera-aim control.
             if (stage == FlightStage.Controlled &&
                 Math.Abs(dmy) < Config.AutoLevelInputDeadzone &&
                 Config.AutoLevelStrength > 0f)

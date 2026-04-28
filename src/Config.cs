@@ -116,7 +116,7 @@ namespace FpvDroneMod
         // Newton-seconds of impulse per (m/s of impact speed) per (1.0 - dist/R).
         // Tuned so a TMax kamikaze flips a Phantom truck.
         public const float VehicleImpulsePerSpeed = 4000.0f;
-        public const float AutoLevelStrength = 1.5f;     // rad/s return to horizon
+        public const float AutoLevelStrength = 0.0f;     // 0 = off (casual camera-aim flight)
         public const float AutoLevelInputDeadzone = 0.005f;
 
         // 12 HUD
