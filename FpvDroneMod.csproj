@@ -19,6 +19,8 @@
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="ManagedBass" Version="3.0.3" />
+    <PackageReference Include="ManagedBass.Fx" Version="2.4.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,4 +32,25 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
   </ItemGroup>
+
+  <!-- Нативные DLL вшиваются в сборку как ресурсы -->
+  <ItemGroup>
+    <EmbeddedResource Include="libs\native\bass.dll">
+      <LogicalName>bass.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="libs\native\bass_fx.dll">
+      <LogicalName>bass_fx.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- Звуковые файлы вшиваются в сборку как ресурсы -->
+  <ItemGroup>
+    <EmbeddedResource Include="sound\drone_start.mp3">
+      <LogicalName>drone_start.mp3</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="sound\drone_fly.mp3">
+      <LogicalName>drone_fly.mp3</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>
