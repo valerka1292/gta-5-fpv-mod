@@ -60,7 +60,9 @@ namespace FpvDroneMod
             ped.IsVisible = false;
             Natives.SetEntityAlpha(ped, Config.PlayerAlpha, false);
 
-            Natives.SetWantedLevelMultiplier(0.0f);
+            // Keep the original wanted-level multiplier so crimes caused by
+            // the drone (owned explosions) are attributed normally.
+            Natives.SetWantedLevelMultiplier(s.WantedMultiplierBefore);
 
             // Initialise drone vector state.
             s.PlayerOriginal = ped.Position;
@@ -120,11 +122,8 @@ namespace FpvDroneMod
 
             Natives.SetWantedLevelMultiplier(s.WantedMultiplierBefore);
 
-            // If anything bumped the wanted level above what the player started
-            // with, roll it back. (Spec M5.)
-            int after = Natives.GetWantedLevel(player);
-            if (after > s.WantedLevelBefore)
-                Natives.SetPlayerWantedLevel(player, s.WantedLevelBefore, false);
+            // Keep wanted level as-is on exit: if the drone attack generated a
+            // response, the player should keep those consequences.
         }
     }
 

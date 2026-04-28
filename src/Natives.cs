@@ -138,6 +138,22 @@ namespace FpvDroneMod
                 explosionType, damageScale, audible, invisible, cameraShake);
         }
 
+        public static void AddOwnedExplosion(Entity owner, Vector3 pos, int explosionType, float damageScale, bool audible, bool invisible, float cameraShake)
+        {
+            if (owner == null || !owner.Exists())
+            {
+                AddExplosionUnowned(pos, explosionType, damageScale, audible, invisible, cameraShake);
+                return;
+            }
+
+            // ADD_OWNED_EXPLOSION attributes the blast to the owner entity.
+            // This lets cops/civilians react to the player as the source.
+            Function.Call(Hash.ADD_OWNED_EXPLOSION,
+                owner.Handle,
+                pos.X, pos.Y, pos.Z,
+                explosionType, damageScale, audible, invisible, cameraShake);
+        }
+
         // APPLY_FORCE_TO_ENTITY — Battlefield-style impulse on nearby
         // vehicles after detonation. forceType=1 = impulse-change-by-direction.
         //   force        — in WORLD space (isDirectionRel=false, isForceRel=false).

@@ -161,7 +161,18 @@ namespace FpvDroneMod
             if (vNorm > 1f) vNorm = 1f;
             float damageScale = 1.0f + (Config.DamageScaleMax - 1.0f) * vNorm;
 
-            Natives.AddExplosionUnowned(
+            Ped ownerPed = null;
+            try
+            {
+                ownerPed = Game.Player?.Character;
+            }
+            catch
+            {
+                ownerPed = null;
+            }
+
+            Natives.AddOwnedExplosion(
+                ownerPed,
                 hitPoint,
                 explosionType: Settings.CurrentExplosionId,
                 damageScale: damageScale,

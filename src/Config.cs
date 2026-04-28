@@ -24,8 +24,8 @@ namespace FpvDroneMod
         public const float DTStep = 2.0f;           // T/Y step size
         public const float ThrottleRate = 12.0f;    // m/s per second while T/Y held
         public const float TInitial    = 0.0f;   // дрон стартует с нулевой скорости
-        public const float TSpoolUp    = 20.0f;  // целевая скорость после раскрутки (м/с)
-        public const float TSpoolDuration = 1.5f; // время раскрутки от 0 до TSpoolUp (сек реального времени)
+        public const float TSpoolUp    = 10.5f;  // ~37.8 км/ч после раскрутки
+        public const float TSpoolDuration = 1.0f; // время раскрутки от 0 до TSpoolUp (сек реального времени)
 
         // 4.5 Vertical
         public const float VVertStep = 8.0f;        // PgUp/PgDn
