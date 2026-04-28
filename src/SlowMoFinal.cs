@@ -30,9 +30,13 @@ namespace FpvDroneMod
         private Phase _phase = Phase.Done;
         private readonly Stopwatch _t = new Stopwatch();
         private Vector3 _hitPoint;
+        private Vector3 _approachDir;   // unit vector along which the drone hit
         private Vector3 _camStart;
         private Vector3 _camTarget;
         private bool _exploded;
+        private float _impactSpeed;     // captured at Begin so SLow-mo can use
+                                        //   the *real* impact speed even after
+                                        //   we zero V to halt the drone.
         private Camera _slowMoCam;
 
         public bool Active => _phase != Phase.Done;
@@ -42,9 +46,12 @@ namespace FpvDroneMod
         // is snapped to hit_point − F*SnapInset. Spawns the cinematic camera
         // co-located with the FPV camera so the cut is invisible, then begins
         // ramping time scale + interpolating the cinematic anchor.
-        public void Begin(DroneState s, Camera fpvCam, Vector3 hitPoint, Ped ignorePed)
+        public void Begin(DroneState s, Camera fpvCam, Vector3 hitPoint,
+                          Vector3 approachDir, float impactSpeed, Ped ignorePed)
         {
             _hitPoint = hitPoint;
+            _approachDir = approachDir;
+            _impactSpeed = impactSpeed;
             _exploded = false;
             _camStart = fpvCam.Position;
             _camTarget = ChooseCinematicCameraPosition(s, hitPoint, ignorePed);
@@ -91,7 +98,7 @@ namespace FpvDroneMod
                     {
                         if (!_exploded)
                         {
-                            Collision.Detonate(_hitPoint, s.V.Length());
+                            Collision.Detonate(_hitPoint, _approachDir, _impactSpeed);
                             _exploded = true;
                         }
                         _phase = Phase.Hold;

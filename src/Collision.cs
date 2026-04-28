@@ -93,7 +93,13 @@ namespace FpvDroneMod
         // nearby vehicles, both scaled by impact speed. The chosen explosion
         // *preset* is preserved (whatever the menu selected); we only multiply
         // its built-in damage by a speed-derived factor.
-        public static void Detonate(Vector3 hitPoint, float speed)
+        //
+        // approachDir is the unit vector along which the drone hit the
+        // surface (prevP → hit). For the primary target (vehicle very close
+        // to hit_point) we blend approachDir into the impulse direction so
+        // a head-on ram actually shoves the truck *along the kamikaze's
+        // velocity vector* instead of just radially outward.
+        public static void Detonate(Vector3 hitPoint, Vector3 approachDir, float speed)
         {
             // Speed → scale: 1.0 at v_min, DamageScaleMax at TMax.
             float vNorm = (speed - Config.DamageScaleMinSpeed)
@@ -134,10 +140,23 @@ namespace FpvDroneMod
                         float falloff = 1.0f - (dist / Config.VehicleImpulseRadius);
                         if (falloff < 0f) continue;
 
-                        Vector3 dir = push / dist;
-                        // Push outward + slightly upward — replicates the
-                        // "lift then tumble" behavior of a real explosion.
-                        Vector3 force = (dir + new Vector3(0, 0, 0.4f))
+                        Vector3 radialDir = push / dist;
+
+                        // Blend approachDir (the drone's velocity direction
+                        // at impact) with the radial outward direction. The
+                        // closer the vehicle is to the hit_point — i.e. the
+                        // closer it is to *being the target we rammed* — the
+                        // more we weight approachDir. Vehicles further out
+                        // get a near-pure radial shockwave.
+                        float approachWeight = falloff; // 1.0 at hit, 0 at radius
+                        Vector3 blendedDir = radialDir * (1.0f - approachWeight)
+                                           + approachDir * approachWeight;
+
+                        // +Z component so vehicles get lifted, not just shoved
+                        // along the ground (matches RAGE's own explosion feel).
+                        blendedDir = blendedDir + new Vector3(0, 0, 0.4f);
+
+                        Vector3 force = blendedDir
                                         * Config.VehicleImpulsePerSpeed
                                         * speed
                                         * falloff;

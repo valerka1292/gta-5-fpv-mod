@@ -302,13 +302,17 @@ namespace FpvDroneMod
                 Vector3 approachDir = approach.LengthSquared() > 0.0001f
                     ? Vector3.Normalize(approach)
                     : _state.F;
+                // Capture impact speed BEFORE we zero out V so the explosion
+                // and vehicle-impulse can scale by how hard we actually hit.
+                float impactSpeed = _state.V.Length();
+
                 _state.P = hit - approachDir * Config.SnapInset;
                 _state.V = Vector3.Zero;
                 if (_fpvCam != null && _fpvCam.Exists())
                     _fpvCam.Position = _state.P;
 
                 _state.ImpactImminent = true;
-                _slowMo.Begin(_state, _fpvCam, hit, ped);
+                _slowMo.Begin(_state, _fpvCam, hit, approachDir, impactSpeed, ped);
                 return;
             }
 
@@ -317,7 +321,12 @@ namespace FpvDroneMod
             float dMax = _state.LoS ? Config.DMaxField : Config.DMaxCity;
             if (d > dMax + Config.EmergencyOverDMax)
             {
-                Collision.Detonate(_state.P, speed);
+                // Emergency detonation past D_max — no real impact, so use
+                // the drone's own velocity direction as approachDir fallback.
+                Vector3 emerDir = _state.V.LengthSquared() > 0.001f
+                    ? Vector3.Normalize(_state.V)
+                    : _state.F;
+                Collision.Detonate(_state.P, emerDir, speed);
                 EndFlight();
                 return;
             }
