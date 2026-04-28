@@ -42,7 +42,7 @@ namespace FpvDroneMod
         //   north). Since GTA's heading angle is CCW from north, "yaw right"
         //   means the heading angle DECREASES, hence the leading minus sign.
         //   dmy > 0 (mouse moved down)  → nose drops, θ decreases.
-        public static void ApplyAngularInput(DroneState s, float dmx, float dmy, float dt)
+        public static void ApplyAngularInput(DroneState s, float dmx, float dmy, float dt, FlightStage stage)
         {
             float scale = dt * 60.0f;
             float psiRate = -dmx * Config.SYaw * scale;
@@ -51,6 +51,15 @@ namespace FpvDroneMod
 
             float dTheta = -dmy * Config.SPitch * scale;
             s.Theta = Clamp(s.Theta + dTheta, -Config.ThetaMax, Config.ThetaMax);
+
+            // Optional angle-mode style auto-level when pitch input is idle.
+            if (stage == FlightStage.Controlled &&
+                Math.Abs(dmy) < Config.AutoLevelInputDeadzone &&
+                Config.AutoLevelStrength > 0f)
+            {
+                float k = Clamp01(Config.AutoLevelStrength * dt);
+                s.Theta = s.Theta * (1.0f - k);
+            }
         }
 
         // 4.2 Roll camera lerp.

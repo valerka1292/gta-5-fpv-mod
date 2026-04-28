@@ -45,6 +45,8 @@ namespace FpvDroneMod
         {
             Natives.AnimpostfxStopAll();
             _currentTier = -1;
+            _scanlineY = 0f;
+            _blackoutUntil = 0f;
         }
 
         // Per-frame UI overlays. Use the live UI canvas dimensions

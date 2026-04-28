@@ -22,6 +22,7 @@ namespace FpvDroneMod
         public const float TMin = 0.0f;
         public const float TMax = 35.0f;            // m/s effective target speed
         public const float DTStep = 2.0f;           // T/Y step size
+        public const float ThrottleRate = 12.0f;    // m/s per second while T/Y held
         public const float TInitial = 20.0f;
 
         // 4.5 Vertical
@@ -61,7 +62,7 @@ namespace FpvDroneMod
         public const float DSafeField = 3000.0f;
         public const float DCritField = 5500.0f;
         public const float DMaxField = 9000.0f;
-        public const float WallPenalty = 0.15f;     // -15% Q per wall
+        public const float WallPenalty = 0.08f;     // -8% Q per wall
         public const float LosCheckInterval = 0.5f; // s realtime
         public const float EmergencyOverDMax = 200.0f;
 
@@ -78,12 +79,15 @@ namespace FpvDroneMod
         // 9 Collision / explosion
         public const float TPredict = 0.35f;        // realtime threshold for slow-mo
         public const float ExplosionRadius = 5.0f;  // informational
+        // NOTE: ExplosionRadius is documentation-only right now; GTA's
+        // ADD_EXPLOSION uses an internal preset radius based on explosionType.
+        // Gameplay tuning uses VehicleImpulseRadius below.
         // ExplosionType.Grenade is type 2 in GTA native enum — see Collision.cs
 
         // 10 Slow-mo
         public const float TimeScaleSlow = 0.15f;
         public const float TimeScaleRamp = 0.1f;    // realtime
-        public const float CamTransition = 0.08f;   // realtime (legacy, unused)
+        public const float CamTransition = 0.08f;   // realtime fallback for camera move
         public const float CamHoldAfterExplosion = 2.0f;
         public const float DCam = 6.0f;
         public const float HCam = 2.0f;
@@ -112,6 +116,8 @@ namespace FpvDroneMod
         // Newton-seconds of impulse per (m/s of impact speed) per (1.0 - dist/R).
         // Tuned so a TMax kamikaze flips a Phantom truck.
         public const float VehicleImpulsePerSpeed = 4000.0f;
+        public const float AutoLevelStrength = 1.5f;     // rad/s return to horizon
+        public const float AutoLevelInputDeadzone = 0.005f;
 
         // 12 HUD
         public const float KHorizonScale = 150.0f;  // px / rad

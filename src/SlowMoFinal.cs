@@ -33,6 +33,7 @@ namespace FpvDroneMod
         private Vector3 _approachDir;   // unit vector along which the drone hit
         private Vector3 _camStart;
         private Vector3 _camTarget;
+        private float _camMoveDuration = Config.CamTransition;
         private bool _exploded;
         private float _impactSpeed;     // captured at Begin so SLow-mo can use
                                         //   the *real* impact speed even after
@@ -58,6 +59,8 @@ namespace FpvDroneMod
             // *not* start from the inside of a wall.
             _camStart = fpvCamPrePos;
             _camTarget = ChooseCinematicCameraPosition(s, hitPoint, ignorePed);
+            float camDist = (_camTarget - _camStart).Length();
+            _camMoveDuration = Math.Max(0.15f, Math.Min(0.5f, camDist / 20.0f));
 
 #pragma warning disable CS0618 // see Main.cs note on RenderingCamera
             _slowMoCam = World.CreateCamera(_camStart, fpvCam.Rotation, fpvCam.FieldOfView);
@@ -90,7 +93,7 @@ namespace FpvDroneMod
 
                 case Phase.CamMove:
                 {
-                    float k = Math.Min(1f, t / Config.CamTransition);
+                    float k = Math.Min(1f, t / _camMoveDuration);
                     Vector3 pos = _camStart + (_camTarget - _camStart) * k;
                     if (_slowMoCam != null && _slowMoCam.Exists())
                     {

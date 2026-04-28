@@ -22,6 +22,24 @@ A prebuilt DLL for **ScriptHookVDotNet v3.7.0-nightly.81** lives in
 [`release/FpvDroneMod.dll`](release/FpvDroneMod.dll). Drop it into your GTA V
 `scripts/` folder and launch.
 
+### Минимум, что нужно скачать для запуска
+
+Если нужен только базовый минимум (без мод-менеджеров и лишних пакетов):
+
+1. **Script Hook V** (Alexander Blade) — чтобы работали ASI-скрипты в GTA V.
+2. **ScriptHookVDotNet v3** — нужны как минимум `ScriptHookVDotNet.asi` и
+   `ScriptHookVDotNet3.dll` в корне GTA V.
+3. **Этот мод** — `FpvDroneMod.dll` в папку `scripts/`.
+
+Итоговая структура:
+
+- `GTA5.exe`
+- `ScriptHookV.dll`
+- `dinput8.dll` (из Script Hook V)
+- `ScriptHookVDotNet.asi`
+- `ScriptHookVDotNet3.dll`
+- `scripts/FpvDroneMod.dll`
+
 ## Build from source
 
 Requires **.NET Framework 4.8** target. Either:
