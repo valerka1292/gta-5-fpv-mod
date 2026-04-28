@@ -326,6 +326,10 @@ namespace FpvDroneMod
             // covers the actual frame's travel — fixes high-speed tunneling
             // through cars/peds.
             Vector3 prevP = _state.P;
+            // Симуляция OSD-телеметрии: время полёта и расход ёмкости
+            _state.FlightTimerReal += dtReal;
+            float currentAmps = (_state.T / Config.TMax) * 35f;   // ток зависит от газа
+            _state.MahUsed += currentAmps * dtReal / 3.6f;        // А·с → мАч
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
             // 13.31-33 Swept-volume contact ray (prevP → curP + margin).
