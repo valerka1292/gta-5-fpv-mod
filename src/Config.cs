@@ -50,13 +50,17 @@ namespace FpvDroneMod
         public const float BInitial = 100.0f;
         public const float SinkMax = 4.0f;          // m/s
 
-        // 7 Signal — city / field profiles
-        public const float DSafeCity = 400.0f;
-        public const float DCritCity = 650.0f;
-        public const float DMaxCity = 900.0f;
-        public const float DSafeField = 2000.0f;
-        public const float DCritField = 4000.0f;
-        public const float DMaxField = 7000.0f;
+        // 7 Signal — city / field profiles. Values bumped from the v1.1 spec
+        // baseline (audit #5): 900 m city max was too restrictive — by the
+        // time you fly past a couple of blocks you hit lost signal, which
+        // doesn't match player expectation for a casual fun mod. Field
+        // values rescaled in proportion.
+        public const float DSafeCity = 700.0f;
+        public const float DCritCity = 1200.0f;
+        public const float DMaxCity = 2000.0f;
+        public const float DSafeField = 3000.0f;
+        public const float DCritField = 5500.0f;
+        public const float DMaxField = 9000.0f;
         public const float WallPenalty = 0.15f;     // -15% Q per wall
         public const float LosCheckInterval = 0.5f; // s realtime
         public const float EmergencyOverDMax = 200.0f;
@@ -91,6 +95,23 @@ namespace FpvDroneMod
         // After contact, the drone is snapped to hit_point − F * SnapInset so
         // the FPV camera "kisses" the surface but doesn't penetrate it.
         public const float SnapInset = 0.05f;
+        // Effective hit-volume radius of the drone for the multi-ray fan.
+        // Larger → more reliable hits on thin geometry (car doors, glass)
+        // at the cost of detonating slightly before the centre crosshair
+        // visually touches.
+        public const float DroneRadius = 0.25f;
+
+        // Damage / impulse scaling vs. impact speed.
+        //   speed = DamageScaleMinSpeed → damageScale = 1.0  (stock blast)
+        //   speed = TMax                → damageScale = DamageScaleMax (boosted)
+        public const float DamageScaleMinSpeed = 5.0f;
+        public const float DamageScaleMax = 3.0f;
+        // Range within which we apply a directional shock impulse to vehicles
+        // post-detonation (audit #3 fix).
+        public const float VehicleImpulseRadius = 8.0f;
+        // Newton-seconds of impulse per (m/s of impact speed) per (1.0 - dist/R).
+        // Tuned so a TMax kamikaze flips a Phantom truck.
+        public const float VehicleImpulsePerSpeed = 4000.0f;
 
         // 12 HUD
         public const float KHorizonScale = 150.0f;  // px / rad

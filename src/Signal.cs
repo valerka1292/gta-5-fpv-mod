@@ -7,16 +7,26 @@ namespace FpvDroneMod
     // Spec section 7. Signal quality / interference.
     internal static class Signal
     {
-        // Cached LoS — refreshed every Config.LosCheckInterval s realtime by the caller.
+        // Cached LoS — refreshed every Config.LosCheckInterval s realtime by
+        // the caller. Audit #6 worry: doing 7 raycasts on the worst path
+        // every refresh causes a CPU spike. Mitigation: short-circuit the
+        // common case (open air → LoS clear → 0 walls) so we only pay the
+        // multi-ray cost when the cheap probe already shows obstruction.
         public static void RefreshLineOfSight(DroneState s, Ped ignorePed)
         {
-            // Single ray from spawn to drone. walls_count is approximated
-            // by re-tracing while skipping previous hits (see CountWalls).
             var ray = World.Raycast(s.Spawn, s.P,
                                     IntersectFlags.Map,
                                     ignorePed);
-            s.LoS = !ray.DidHit;
-            s.WallsCount = CountWalls(s.Spawn, s.P, ignorePed);
+            if (!ray.DidHit)
+            {
+                s.LoS = true;
+                s.WallsCount = 0;
+            }
+            else
+            {
+                s.LoS = false;
+                s.WallsCount = CountWalls(s.Spawn, s.P, ignorePed);
+            }
         }
 
         // Approximate the number of geometry intersections by stepping along

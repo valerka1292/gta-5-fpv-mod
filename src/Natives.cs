@@ -137,5 +137,23 @@ namespace FpvDroneMod
                 pos.X, pos.Y, pos.Z,
                 explosionType, damageScale, audible, invisible, cameraShake);
         }
+
+        // APPLY_FORCE_TO_ENTITY — used to add a Battlefield-style impulse to
+        // nearby vehicles after detonation so trucks actually flip on a
+        // high-speed kamikaze hit, even with a low-power explosion type.
+        // forceType=1 = impulse-change-relative-to-direction.
+        public static void ApplyForceToEntity(Entity e, Vector3 force, Vector3 offset, int forceType)
+        {
+            Function.Call(Hash.APPLY_FORCE_TO_ENTITY,
+                e.Handle, forceType,
+                force.X, force.Y, force.Z,
+                offset.X, offset.Y, offset.Z,
+                0,           // boneIndex
+                false,       // isDirectionRel
+                true,        // ignoreUpVec
+                true,        // isForceRel
+                false,       // p12
+                true);       // p13
+        }
     }
 }
