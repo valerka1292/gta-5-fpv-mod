@@ -16,7 +16,13 @@ Implements the v2.0 spec including all safety guards from the audit:
   (`Stopwatch`), separated from physics `dt_game`.
 - Explicit `× 180/π` conversion for `Camera.Rotation` (degrees).
 
-## Build
+## Install (precompiled)
+
+A prebuilt DLL for **ScriptHookVDotNet v3.7.0-nightly.81** lives in
+[`release/FpvDroneMod.dll`](release/FpvDroneMod.dll). Drop it into your GTA V
+`scripts/` folder and launch.
+
+## Build from source
 
 Requires **.NET Framework 4.8** target. Either:
 
@@ -32,7 +38,8 @@ The output `FpvDroneMod.dll` goes into your GTA V `scripts/` folder alongside
 `ScriptHookVDotNet3.asi` / `ScriptHookVDotNet3.dll`.
 
 `libs/ScriptHookVDotNet3.dll` and `.xml` are bundled for build-time reference
-only. They are NOT copied to the output (`Private=False`).
+only (currently v3.7.0-nightly.81). They are NOT copied to the output
+(`Private=False`).
 
 ## Controls
 

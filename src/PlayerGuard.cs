@@ -45,7 +45,7 @@ namespace FpvDroneMod
             s.PedInvincibleBefore = false;
             s.PedCanRagdollBefore = true;
             s.WantedMultiplierBefore = 1.0f;
-            s.WantedLevelBefore = player.WantedLevel;
+            s.WantedLevelBefore = player.Wanted.WantedLevel;
 
             // 2. Apply flight-mode flags (spec A1, A2, A4).
             Natives.SetEntityCollision(ped, false, true);

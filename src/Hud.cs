@@ -29,8 +29,11 @@ namespace FpvDroneMod
             DrawText("SPD",            new PointF(60,  60), 0.55f, White);
             DrawText($"{(int)speedKmh} km/h", new PointF(60,  90), 0.7f,  spdColor);
 
-            // ALT (left-center)
-            float groundZ = World.GetGroundHeight(s.P);
+            // ALT (left-center). Use new GetGroundHeight overload (v3.7) — falls
+            // back to drone-z if the height query fails (e.g. far from terrain).
+            float groundZ = 0f;
+            if (!World.GetGroundHeight(s.P, out groundZ, GetGroundHeightMode.Normal))
+                groundZ = s.P.Z;
             float alt = s.P.Z - groundZ;
             Color altColor = (alt < 5f) ? Orange : White;
             DrawText("ALT",            new PointF(60, 480), 0.55f, White);

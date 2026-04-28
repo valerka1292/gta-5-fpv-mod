@@ -56,7 +56,7 @@ namespace FpvDroneMod
             string err = PlayerGuard.PreflightCheck(player, ped);
             if (err != null)
             {
-                Notification.Show("FPV: " + err, false);
+                Notification.PostTicker("FPV: " + err, false, false);
                 return;
             }
 
@@ -64,8 +64,10 @@ namespace FpvDroneMod
             PlayerGuard.OnEnter(player, ped, _state);
             InputDistortion.Reset();
 
+#pragma warning disable CS0618 // World.CreateCamera + RenderingCamera deprecated in v3.7 nightly but still functional
             _fpvCam = World.CreateCamera(_state.P, Vector3.Zero, Config.FpvFov);
             World.RenderingCamera = _fpvCam;
+#pragma warning restore CS0618
 
             _flying = true;
         }
@@ -77,7 +79,9 @@ namespace FpvDroneMod
             try { _slowMo.ForceAbort(); } catch { }
             Effects.StopAll();
 
+#pragma warning disable CS0618
             World.RenderingCamera = null;
+#pragma warning restore CS0618
             if (_fpvCam != null && _fpvCam.Exists())
             {
                 try { _fpvCam.Delete(); } catch { }

@@ -37,9 +37,10 @@ namespace FpvDroneMod
             _camStart = fpvCam.Position;
             _camTarget = ChooseCinematicCameraPosition(s, hitPoint, ignorePed);
 
-            // Pre-create cinematic cam so we can interpolate to it.
+#pragma warning disable CS0618 // see Main.cs note
             _slowMoCam = World.CreateCamera(_camStart, fpvCam.Rotation, fpvCam.FieldOfView);
             World.RenderingCamera = _slowMoCam;
+#pragma warning restore CS0618
 
             _phase = Phase.RampDown;
             _t.Restart();

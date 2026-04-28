@@ -7,3 +7,5 @@ obj/
 *.swp
 .DS_Store
 packages/
+# release/ is committed — that's the prebuilt dll for users
+!release/
