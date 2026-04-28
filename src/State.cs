@@ -51,6 +51,10 @@ namespace FpvDroneMod
         public float LastDmy;
         public float LastPsiRate;
 
+        // Раскрутка при старте
+        public bool  Spooling      = false;
+        public float SpoolElapsed  = 0f;    // сек реального времени
+
         // Slow-mo banner flag (set by Main when Collision.Outcome.ImpactImminent fires)
         public bool ImpactImminent;
     }

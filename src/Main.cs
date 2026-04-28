@@ -42,6 +42,7 @@ namespace FpvDroneMod
         public Main()
         {
             Log.Init();
+            AudioManager.Init();
             Log.Info("FPV Drone Mod starting up");
             Tick    += OnTick;
             KeyDown += OnKeyDown;
@@ -85,11 +86,15 @@ namespace FpvDroneMod
             _mouseFirstFrame = true;
             MouseCapture.Recenter();
             _flying = true;
+            _state.Spooling     = true;
+            _state.SpoolElapsed = 0f;
+            AudioManager.OnLaunch();
         }
 
         private void EndFlight()
         {
             if (!_flying) return;
+            AudioManager.OnStop();
 
             try { _slowMo.ForceAbort(); }
             catch (Exception ex) { Log.Error("EndFlight: SlowMo.ForceAbort failed", ex); }
@@ -168,6 +173,8 @@ namespace FpvDroneMod
             catch (Exception ex) { Log.Error("Aborted: SlowMo.ForceAbort failed", ex); }
             try { Effects.StopAll(); }
             catch (Exception ex) { Log.Error("Aborted: Effects.StopAll failed", ex); }
+            try { AudioManager.OnStop(); }
+            catch (Exception ex) { Log.Error("Aborted: AudioManager.OnStop failed", ex); }
             try { EndFlight(); }
             catch (Exception ex) { Log.Error("Aborted: EndFlight failed", ex); }
         }
@@ -300,6 +307,19 @@ namespace FpvDroneMod
 
             // 13.24-30 Velocity / position integration. Battery dead → motors
             // off (T=0), drag mode = dead.
+            // Раскрутка при старте: плавный разгон от 0 до TSpoolUp за TSpoolDuration секунд
+            if (_state.Spooling)
+            {
+                _state.SpoolElapsed += dtReal;
+                float spoolT = Physics.Clamp01(_state.SpoolElapsed / Config.TSpoolDuration);
+                // Квадратичная кривая для плавного нарастания
+                _state.T = spoolT * spoolT * Config.TSpoolUp;
+                if (_state.SpoolElapsed >= Config.TSpoolDuration)
+                {
+                    _state.Spooling    = false;
+                    _state.T           = Config.TSpoolUp;
+                }
+            }
             if (batteryDead) _state.T = 0f;
 
             // Capture pre-integration position so the swept collision ray
@@ -343,6 +363,7 @@ namespace FpvDroneMod
                     _fpvCam.Position = _state.P;
 
                 _state.ImpactImminent = true;
+                AudioManager.OnCrash();
                 _slowMo.Begin(_state, _fpvCam, hit, approachDir, impactSpeed,
                               fpvCamPrePos, ped);
                 return;
@@ -373,7 +394,8 @@ namespace FpvDroneMod
             if (_fpvCam != null && _fpvCam.Exists())
                 _fpvCam.Position = _state.P;
 
-            // 13.38 Drone whine — intentionally skipped (no audio in this rev).
+            // 13.38 Аудио-движок дрона
+            AudioManager.Update(_state);
 
             // 13.39 Interference effects.
             Effects.Update(_state.I);
