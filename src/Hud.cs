@@ -11,12 +11,14 @@ namespace FpvDroneMod
         private static float ScreenW => GTA.UI.Screen.Width;
         private static float ScreenH => GTA.UI.Screen.Height;
 
-        private static readonly Color White  = Color.FromArgb(220, 230, 230, 230);
-        private static readonly Color Green  = Color.FromArgb(220, 80, 220, 80);
-        private static readonly Color Yellow = Color.FromArgb(220, 240, 200, 60);
-        private static readonly Color Orange = Color.FromArgb(220, 240, 140, 40);
-        private static readonly Color Red    = Color.FromArgb(220, 230, 60, 60);
-        private static readonly Color Dim    = Color.FromArgb(120, 170, 170, 170);
+        private static readonly Color White  = Color.FromArgb(255, 245, 245, 245);
+        private static readonly Color Red    = Color.FromArgb(255, 230, 60, 60);
+        private static readonly Color Dim    = Color.FromArgb(255, 180, 180, 180);
+
+        private const float ROW_H = 18f;
+        private const float TAPE_ROWS = 4f;
+        private const float SPD_STEP = 10f;
+        private const float ALT_STEP = 10f;
 
         public static void Draw(DroneState s, float fpvFov)
         {
@@ -24,7 +26,10 @@ namespace FpvDroneMod
             DrawCompassTape(s);
             DrawSpeedTape(s);
             DrawAltitudeTape(s);
-            DrawCenterReticle();
+
+            if (s.Stage != FlightStage.Lost)
+                DrawCenterReticle();
+
             DrawStatusBanner(s);
             DrawHorizon(s);
             DrawBottomLeftBatteryBlock(s);
@@ -33,158 +38,183 @@ namespace FpvDroneMod
 
         private static void DrawTopRow(DroneState s)
         {
-            float topY = 20f;
-            DrawGpsCoords(s, new PointF(ScreenW * 0.03f, topY));
+            float topY = 25f;
+
+            // Left (GPS + Home)
+            DrawText($"LAT {s.P.Y,8:F4}", new PointF(30f, topY), 0.32f, White);
+            DrawText($"LON {s.P.X,8:F4}", new PointF(30f, topY + 18f), 0.32f, White);
 
             float distHome = (s.P - s.Spawn).Length();
-            Color homeColor = distHome > (s.LoS ? Config.DCritField : Config.DCritCity) ? Yellow : White;
-            DrawText($"HOME {distHome,5:F0}m", new PointF(ScreenW * 0.39f, topY), 0.32f, homeColor);
+            string homeStr = distHome >= 1000f ? $"HOME {distHome / 1000f:F1}k" : $"HOME {(int)distHome}m";
+            DrawText(homeStr, new PointF(30f, topY + 36f), 0.32f, White);
 
+            // Right (RSSI) - Moved down to Y=60 to avoid wanted level stars
             int rssi = (int)Math.Round(Math.Max(0f, Math.Min(1f, s.Q)) * 100f);
-            Color rssiColor = rssi < 25 ? Red : (rssi < 45 ? Yellow : White);
-            DrawText($"RSSI {rssi,3}%", new PointF(ScreenW * 0.86f, topY), 0.32f, rssiColor);
-        }
-
-        private static void DrawGpsCoords(DroneState s, PointF pos)
-        {
-            DrawText($"LAT {s.P.Y,8:F5}", pos, 0.30f, White);
-            DrawText($"LON {s.P.X,8:F5}", new PointF(pos.X, pos.Y + 15f), 0.30f, White);
+            Color rssiColor = rssi < 30 ? Red : White;
+            DrawText($"RSSI {rssi}%", new PointF(ScreenW - 100f, 60f), 0.32f, rssiColor);
         }
 
         private static void DrawCompassTape(DroneState s)
         {
             float cx = ScreenW * 0.5f;
-            float y = 56f;
+            float y = 25f;
             float headingDeg = Normalize360(s.Psi * MathF.Rad2Deg);
 
-            const float pxPerDeg = 3.2f;
-            const float halfW = 160f;
-            new ContainerElement(new PointF(cx - halfW, y), new SizeF(halfW * 2f, 1f), Dim).Draw();
+            const float pxPerDeg = 3.5f;
+            const float halfW = 150f;
 
-            for (int d = -50; d <= 50; d += 5)
+            DrawOsdLine(new PointF(cx - halfW, y), new SizeF(halfW * 2f, 2f), White);
+
+            for (int d = -45; d <= 45; d += 5)
             {
                 float x = cx + d * pxPerDeg;
-                bool major = d % 10 == 0;
+                bool major = d % 15 == 0;
                 float h = major ? 10f : 5f;
-                new ContainerElement(new PointF(x, y - h), new SizeF(1f, h), White).Draw();
+
+                DrawOsdLine(new PointF(x - 1f, y - h), new SizeF(2f, h), White);
 
                 if (major)
                 {
                     int mark = (int)Normalize360(headingDeg + d);
-                    DrawText(mark.ToString("000"), new PointF(x - 10f, y - 23f), 0.22f, Dim);
+                    DrawText(mark.ToString("000"), new PointF(x - 12f, y - 24f), 0.28f, White);
                 }
             }
 
-            DrawText($"▼{(int)headingDeg:000}°", new PointF(cx - 26f, y + 4f), 0.33f, White);
+            DrawText("V", new PointF(cx - 5f, y + 2f), 0.30f, White);
+            DrawText($"{(int)headingDeg:000}", new PointF(cx - 14f, y + 16f), 0.34f, White);
         }
 
         private static void DrawSpeedTape(DroneState s)
         {
-            float x = 44f;
+            float x = 60f;
             float cy = ScreenH * 0.5f;
             float speed = s.V.Length() * 3.6f;
+            int baseVal = (int)Math.Round(speed / SPD_STEP) * (int)SPD_STEP;
 
-            new ContainerElement(new PointF(x, cy - 95f), new SizeF(40f, 190f), Color.FromArgb(30, 255, 255, 255)).Draw();
-
-            for (int k = -4; k <= 4; k++)
+            for (int i = -(int)TAPE_ROWS; i <= (int)TAPE_ROWS; i++)
             {
-                float yy = cy + k * 22f;
-                new ContainerElement(new PointF(x + 4f, yy), new SizeF(8f, 1f), Dim).Draw();
-                float val = Math.Max(0f, speed - k * 10f);
-                DrawText(((int)val).ToString(), new PointF(x + 16f, yy - 8f), 0.23f, Dim);
+                int val = baseVal + i * (int)SPD_STEP;
+                if (val < 0) continue;
+
+                float frac = (speed - baseVal) / SPD_STEP;
+                float y = cy - (i - frac) * ROW_H;
+                if (y < cy - TAPE_ROWS * ROW_H || y > cy + TAPE_ROWS * ROW_H) continue;
+
+                DrawOsdLine(new PointF(x - 8f, y), new SizeF(8f, 2f), White);
+                if (val % 20 == 0 || i == 0)
+                {
+                    DrawText(val.ToString(), new PointF(x - 34f, y - 10f), 0.30f, White);
+                }
             }
 
-            DrawBox(new PointF(x + 2f, cy - 12f), new SizeF(58f, 24f), Color.FromArgb(35, 0, 0, 0));
-            DrawText($"{speed,4:F0}", new PointF(x + 10f, cy - 8f), 0.34f, White);
+            DrawOsdLine(new PointF(x, cy - TAPE_ROWS * ROW_H), new SizeF(2f, TAPE_ROWS * ROW_H * 2f), White);
+
+            DrawText(">", new PointF(x - 42f, cy - 12f), 0.35f, White);
+            DrawText($"{(int)speed}", new PointF(x - 30f, cy - 12f), 0.35f, White);
+            DrawText("KPH", new PointF(x - 34f, cy + TAPE_ROWS * ROW_H + 5f), 0.25f, White);
         }
 
         private static void DrawAltitudeTape(DroneState s)
         {
-            float x = ScreenW - 84f;
+            float x = ScreenW - 60f;
             float cy = ScreenH * 0.5f;
             float alt = GetAltitudeAgl(s);
+            int baseVal = (int)Math.Round(alt / ALT_STEP) * (int)ALT_STEP;
 
-            new ContainerElement(new PointF(x, cy - 95f), new SizeF(40f, 190f), Color.FromArgb(30, 255, 255, 255)).Draw();
-
-            for (int k = -4; k <= 4; k++)
+            for (int i = -(int)TAPE_ROWS; i <= (int)TAPE_ROWS; i++)
             {
-                float yy = cy + k * 22f;
-                new ContainerElement(new PointF(x + 28f, yy), new SizeF(8f, 1f), Dim).Draw();
-                float val = Math.Max(0f, alt - k * 5f);
-                DrawText(((int)val).ToString(), new PointF(x - 20f, yy - 8f), 0.23f, Dim);
+                int val = baseVal + i * (int)ALT_STEP;
+                if (val < 0) continue;
+
+                float frac = (alt - baseVal) / ALT_STEP;
+                float y = cy - (i - frac) * ROW_H;
+                if (y < cy - TAPE_ROWS * ROW_H || y > cy + TAPE_ROWS * ROW_H) continue;
+
+                DrawOsdLine(new PointF(x, y), new SizeF(8f, 2f), White);
+                if (val % 20 == 0 || i == 0)
+                {
+                    DrawText(val.ToString(), new PointF(x + 12f, y - 10f), 0.30f, White);
+                }
             }
 
-            DrawBox(new PointF(x - 54f, cy - 12f), new SizeF(58f, 24f), Color.FromArgb(35, 0, 0, 0));
-            Color c = alt < 3f ? Orange : White;
-            DrawText($"{alt,4:F0}", new PointF(x - 46f, cy - 8f), 0.34f, c);
+            DrawOsdLine(new PointF(x - 2f, cy - TAPE_ROWS * ROW_H), new SizeF(2f, TAPE_ROWS * ROW_H * 2f), White);
+
+            Color altColor = alt < 5f ? Red : White;
+            DrawText($"{(int)alt}", new PointF(x + 12f, cy - 12f), 0.35f, altColor);
+            DrawText("<", new PointF(x + 38f, cy - 12f), 0.35f, altColor);
+            DrawText("ALT", new PointF(x + 12f, cy + TAPE_ROWS * ROW_H + 5f), 0.25f, White);
         }
 
         private static void DrawCenterReticle()
         {
             float cx = ScreenW * 0.5f;
             float cy = ScreenH * 0.5f;
-            new ContainerElement(new PointF(cx - 16f, cy), new SizeF(12f, 1.5f), White).Draw();
-            new ContainerElement(new PointF(cx + 4f, cy), new SizeF(12f, 1.5f), White).Draw();
-            new ContainerElement(new PointF(cx - 1f, cy - 1f), new SizeF(2f, 2f), White).Draw();
-            DrawText("○", new PointF(cx - 5f, cy - 8f), 0.28f, White);
+
+            // 1. Левая линия (—)
+            // Начинается чуть левее центра и оставляет отступ (gap) до круга
+            DrawOsdLine(new PointF(cx - 24f, cy - 1f), new SizeF(14f, 2f), White);
+
+            // 2. Идеальный OSD-круг по центру (○)
+            // Генерируем 8 точек по окружности. Это гарантирует 100%
+            // пиксельную центровку на любом разрешении без зависимости от шрифтов.
+            float r = 5.5f; // Радиус кружка
+            for (int i = 0; i < 8; i++)
+            {
+                double a = i * Math.PI / 4.0;
+                float px = cx + (float)Math.Cos(a) * r;
+                float py = cy + (float)Math.Sin(a) * r;
+
+                // Размер точки 2.5x2.5 пикселя дает отличную читаемость
+                DrawOsdLine(new PointF(px - 1.25f, py - 1.25f), new SizeF(2.5f, 2.5f), White);
+            }
         }
 
         private static void DrawStatusBanner(DroneState s)
         {
-            string text = "[  ARMED  ]";
-            Color c = Green;
+            string text = "ARMED"; Color c = White;
 
-            if (s.B <= 0.001f && s.MotorsDeadBannerT > 0f) { text = "[ MOTORS DEAD ]"; c = Red; }
-            else if (s.ImpactImminent) { text = "[ IMPACT IMMINENT ]"; c = Red; }
-            else if (s.Stage == FlightStage.Lost) { text = "[ AUTONOMOUS MODE ]"; c = Red; }
-            else if (s.Q < 0.15f) { text = "[ SIGNAL LOST ]"; c = Red; }
-            else if (s.SignalRestoredBannerT > 0f) { text = "[ SIGNAL RESTORED ]"; c = Green; }
-            else if (s.B < 10f) { text = "[ CRITICAL BAT ]"; c = Red; }
-            else if (s.B < 25f) { text = "[ LOW BAT ]"; c = Yellow; }
+            if (s.B <= 0.001f && s.MotorsDeadBannerT > 0f) { text = "MOTORS DEAD"; c = Red; }
+            else if (s.ImpactImminent) { text = "IMPACT IMMINENT"; c = Red; }
+            else if (s.Stage == FlightStage.Lost) { text = "AUTONOMOUS MODE"; c = Red; }
+            else if (s.Q < 0.15f) { text = "SIGNAL LOST"; c = Red; }
+            else if (s.SignalRestoredBannerT > 0f) { text = "SIGNAL RESTORED"; c = White; }
+            else if (s.B < 10f) { text = "CRITICAL BAT"; c = Red; }
 
-            DrawText(text, new PointF(ScreenW * 0.5f - 72f, ScreenH * 0.5f - 42f), 0.36f, c);
+            DrawText(text, new PointF(ScreenW * 0.5f - 50f, ScreenH - 80f), 0.38f, c);
         }
 
         private static void DrawBottomLeftBatteryBlock(DroneState s)
         {
-            // Поднято выше, чтобы не пересекаться с миникартой GTA.
-            float bx = 28f;
-            float by = ScreenH - 156f;
-            DrawBatteryBlock(s, bx, by);
-        }
-
-        private static void DrawBatteryBlock(DroneState s, float bx, float by)
-        {
-            DrawBox(new PointF(bx - 4f, by - 2f), new SizeF(100f, 52f), Color.FromArgb(45, 0, 0, 0));
+            // Y = ScreenH - 240 ensures we clear the GTA V minimap completely
+            float bx = 30f;
+            float by = ScreenH - 240f;
 
             float volts = SimPackVoltage(s);
             float amps = SimAmps(s);
-            Color vCol = volts < 14.2f ? Yellow : White;
-            Color aCol = amps > 28f ? Yellow : White;
+            Color vCol = volts < 14.0f ? Red : White;
 
-            DrawText($"[P] {volts:F1}V", new PointF(bx, by), 0.30f, vCol);
-            DrawText($"    {amps:F1}A", new PointF(bx, by + 14f), 0.30f, aCol);
-            DrawText($" {s.MahUsed:F0} mAh", new PointF(bx, by + 28f), 0.30f, White);
+            DrawText($"MAIN {volts:F1}V", new PointF(bx, by), 0.32f, vCol);
+            DrawText($"CURR {amps:F0}A", new PointF(bx, by + 18f), 0.32f, White);
+            DrawText($"CONS {s.MahUsed:F0}mAh", new PointF(bx, by + 36f), 0.32f, White);
         }
 
         private static void DrawBottomRightInfo(DroneState s)
         {
-            float bx = ScreenW - 170f;
-            float by = ScreenH - 156f;
-            DrawBox(new PointF(bx - 4f, by - 2f), new SizeF(145f, 52f), Color.FromArgb(45, 0, 0, 0));
+            float bx = ScreenW - 130f;
+            float by = ScreenH - 240f;
 
             float vSpeed = s.V.Z;
-            Color vsCol = Math.Abs(vSpeed) > 5f ? Yellow : White;
-            DrawText($"VAR {vSpeed,5:F1}m/s", new PointF(bx, by), 0.30f, vsCol);
-            DrawText($"VTX {12.0f:F1}V", new PointF(bx, by + 14f), 0.30f, White);
-            DrawText($"TMR {FormatTime(s.FlightTimerReal)}", new PointF(bx, by + 28f), 0.30f, White);
+            string vsSign = vSpeed >= 0 ? "+" : "";
+
+            DrawText($"VAR {vsSign}{vSpeed:F1}", new PointF(bx, by), 0.32f, White);
+            DrawText("VTX 12.0V", new PointF(bx, by + 18f), 0.32f, White);
+            DrawText($"FLY {FormatTime(s.FlightTimerReal)}", new PointF(bx, by + 36f), 0.32f, White);
         }
 
         private static float SimPackVoltage(DroneState s)
         {
-            // 4S LiPo: от ~16.8 В (100%) до ~13.2 В (0%), с небольшой просадкой под током.
             float baseV = 13.2f + 3.6f * Math.Max(0f, Math.Min(100f, s.B)) / 100f;
-            float sag = SimAmps(s) * 0.01f;
+            float sag = SimAmps(s) * 0.015f;
             return Math.Max(12.8f, baseV - sag);
         }
 
@@ -216,25 +246,35 @@ namespace FpvDroneMod
             float yCenter = ScreenH / 2f + yOff;
             float angleRad = -s.PhiCam;
 
-            const int segments = 28;
-            const float halfLen = 160f;
+            const int segments = 24;
+            const float halfLen = 180f;
             float dx = (float)Math.Cos(angleRad) * (halfLen * 2f / segments);
             float dy = (float)Math.Sin(angleRad) * (halfLen * 2f / segments);
             float x0 = ScreenW / 2f - (float)Math.Cos(angleRad) * halfLen;
             float y0 = yCenter - (float)Math.Sin(angleRad) * halfLen;
 
             for (int i = 0; i < segments; i++)
-                new ContainerElement(new PointF(x0 + dx * i, y0 + dy * i), new SizeF(5f, 1f), White).Draw();
+            {
+                if (i % 2 == 0)
+                    DrawOsdLine(new PointF(x0 + dx * i, y0 + dy * i), new SizeF(8f, 2f), White);
+            }
         }
+
+        // --- Custom OSD Rendering Helpers ---
 
         private static void DrawText(string text, PointF pos, float scale, Color c)
         {
-            new TextElement(text, pos, scale, c, GTA.UI.Font.ChaletLondon).Draw();
+            // Adding Shadow = true forces GTA UI to draw a 1px black outline/shadow
+            // making it perfectly visible on bright skies without needing a background box.
+            new TextElement(text, pos, scale, c, GTA.UI.Font.ChaletLondon) { Shadow = true }.Draw();
         }
 
-        private static void DrawBox(PointF pos, SizeF size, Color color)
+        private static void DrawOsdLine(PointF pos, SizeF size, Color c)
         {
-            new ContainerElement(pos, size, color).Draw();
+            // Draw slightly larger black background first to act as a hard outline
+            new ContainerElement(new PointF(pos.X - 1f, pos.Y - 1f), new SizeF(size.Width + 2f, size.Height + 2f), Color.Black).Draw();
+            // Draw actual white line
+            new ContainerElement(pos, size, c).Draw();
         }
     }
 }
