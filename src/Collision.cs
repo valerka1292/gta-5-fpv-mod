@@ -17,21 +17,32 @@ namespace FpvDroneMod
             ImpactNow   // ray hit within next-frame travel distance + margin
         }
 
-        public static (Outcome outcome, Vector3 hitPoint, float speed) Step(DroneState s, float dtGame, Ped ignorePed)
+        // Swept-volume contact ray. Cast from the position the drone occupied
+        // BEFORE this frame's IntegrateMotion to its current (post-integration)
+        // position, plus a short ContactMargin "feeler" past the new position.
+        // This is what kills the tunneling-through-cars bug at high speeds:
+        // even if the drone covers several metres in one frame, the ray
+        // covers the entire swept path and the first surface it touches is
+        // the one that detonates — exactly where the camera entered the
+        // texture under the angle of approach.
+        public static (Outcome outcome, Vector3 hitPoint, float speed) Step(
+            DroneState s, Vector3 prevP, float dtGame, Ped ignorePed)
         {
             float speed = s.V.Length();
 
-            // Even with very low velocity we still want a thin "feeler" ray so
-            // that ramming into something at near-stationary speeds still
-            // detonates instead of penetrating.
-            float travel = speed * dtGame * 1.5f;
-            float rayLen = Math.Max(travel + Config.ContactMargin, Config.ContactMargin);
+            Vector3 sweep = s.P - prevP;
+            float sweepLen = sweep.Length();
+            Vector3 dir = sweepLen > 0.001f ? sweep / sweepLen : s.F;
 
-            Vector3 end = s.P + s.F * rayLen;
+            // End the ray a short ContactMargin past the new position so that
+            // (a) we still detect surfaces we're about to clip into when
+            // hovering / very slow, and (b) we never miss a wall the drone
+            // would penetrate within one more sub-pixel of motion.
+            Vector3 end = s.P + dir * Config.ContactMargin;
 
             // Everything (511) so vehicles/peds/objects/map/glass all hit.
             // The player ped is excluded — see PlayerGuard A7.
-            var ray = World.Raycast(s.P, end, IntersectFlags.Everything, ignorePed);
+            var ray = World.Raycast(prevP, end, IntersectFlags.Everything, ignorePed);
             if (!ray.DidHit)
                 return (Outcome.Clear, s.P, speed);
 
@@ -45,10 +56,9 @@ namespace FpvDroneMod
             if (damageScale < 0.4f) damageScale = 0.4f;
             if (damageScale > 1.0f) damageScale = 1.0f;
 
-            // Type 2 = Grenade
             Natives.AddExplosionUnowned(
                 hitPoint,
-                explosionType: 2,
+                explosionType: Settings.CurrentExplosionId,
                 damageScale: damageScale,
                 audible: true,
                 invisible: false,

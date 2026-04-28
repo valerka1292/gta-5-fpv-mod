@@ -50,6 +50,15 @@ only (currently v3.7.0-nightly.81). They are NOT copied to the output
 | Yaw / pitch | Mouse |
 | Throttle + / − | **T** / **Y** |
 | Vertical + / − | **PgUp** / **PgDn** |
+| Settings menu (only when not flying) | **F9** |
+| Menu navigation | **↑ / ↓** select, **← / →** change |
+| Menu close | **F9 / Esc** |
+
+### Settings menu
+
+| Item | Description |
+|---|---|
+| Explosion type | Cycles through 9 stock GTA explosion presets — Grenade (id 0), Grenade Launcher (1), Sticky Bomb (2), Rocket / RPG (4), Tank Shell (5), Car (7), Plane (8), Petrol Pump (9), Blimp (29). Picked value applies to the next impact. |
 
 ## Limitations
 

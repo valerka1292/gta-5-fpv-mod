@@ -110,6 +110,20 @@ namespace FpvDroneMod
 
         private void OnKeyDown(object sender, KeyEventArgs e)
         {
+            // Settings menu absorbs all input while open. Only allowed to open
+            // from non-flying state — opening it mid-flight would conflict
+            // with the mouse-capture loop.
+            if (Menu.IsOpen)
+            {
+                Menu.OnKey(e.KeyCode);
+                return;
+            }
+            if (e.KeyCode == Keys.F9)
+            {
+                if (!_flying) Menu.Toggle();
+                return;
+            }
+
             if (e.KeyCode == Keys.G)
             {
                 if (_flying) EndFlight();
@@ -152,6 +166,14 @@ namespace FpvDroneMod
             if (dtReal < 0f) dtReal = 0f;
             if (dtReal > Config.DtClampMax) dtReal = Config.DtClampMax;
             _rtPrev = now;
+
+            // Settings menu can be drawn whether we're flying or not. When
+            // open it absorbs all input via OnKeyDown.
+            if (Menu.IsOpen)
+            {
+                Menu.Draw();
+                if (!_flying) return;
+            }
 
             if (!_flying) return;
 
@@ -259,19 +281,28 @@ namespace FpvDroneMod
             // 13.24-30 Velocity / position integration. Battery dead → motors
             // off (T=0), drag mode = dead.
             if (batteryDead) _state.T = 0f;
+
+            // Capture pre-integration position so the swept collision ray
+            // covers the actual frame's travel — fixes high-speed tunneling
+            // through cars/peds.
+            Vector3 prevP = _state.P;
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
-            // 13.31-33 Forward raycast — pure contact detection, no
-            // predictive look-ahead.
-            var (outcome, hit, speed) = Collision.Step(_state, dtGame, ped);
+            // 13.31-33 Swept-volume contact ray (prevP → curP + margin).
+            var (outcome, hit, speed) = Collision.Step(_state, prevP, dtGame, ped);
             if (outcome == Collision.Outcome.ImpactNow)
             {
                 // Snap the drone (and therefore the FPV camera) to just
-                // shy of the surface so the player sees the wall fill the
-                // viewport at the exact moment slow-mo kicks in. We back
-                // off by SnapInset metres along F so the camera doesn't
-                // poke through the texture.
-                _state.P = hit - _state.F * Config.SnapInset;
+                // shy of the surface along the actual approach direction
+                // (prevP → hit), not along F — at high speed inertia can
+                // make trajectory diverge from where the camera was
+                // looking. We back off by SnapInset metres so the camera
+                // kisses the texture without poking through.
+                Vector3 approach = hit - prevP;
+                Vector3 approachDir = approach.LengthSquared() > 0.0001f
+                    ? Vector3.Normalize(approach)
+                    : _state.F;
+                _state.P = hit - approachDir * Config.SnapInset;
                 _state.V = Vector3.Zero;
                 if (_fpvCam != null && _fpvCam.Exists())
                     _fpvCam.Position = _state.P;
