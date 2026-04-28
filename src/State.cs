@@ -54,6 +54,8 @@ namespace FpvDroneMod
         // Раскрутка при старте
         public bool  Spooling      = false;
         public float SpoolElapsed  = 0f;    // сек реального времени
+        public float FlightTimerReal = 0f;   // секунды с момента запуска
+        public float MahUsed         = 0f;   // израсходованная ёмкость, мАч
 
         // Slow-mo banner flag (set by Main when Collision.Outcome.ImpactImminent fires)
         public bool ImpactImminent;
