@@ -118,6 +118,10 @@ namespace FpvDroneMod
         // Newton-seconds of impulse per (m/s of impact speed) per (1.0 - dist/R).
         // Tuned so a TMax kamikaze flips a Phantom truck.
         public const float VehicleImpulsePerSpeed = 4000.0f;
+        // Approximate drone mass for contact impulse transfer (kg).
+        public const float DroneMassKg = 1.8f;
+        // Extra scaling so gameplay impact impulse is noticeable on heavy props/cars.
+        public const float ImpactImpulseScale = 120.0f;
         public const float AutoLevelStrength = 0.0f;     // 0 = off (casual camera-aim flight)
         public const float AutoLevelInputDeadzone = 0.005f;
 

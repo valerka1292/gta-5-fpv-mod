@@ -30,7 +30,7 @@ namespace FpvDroneMod
             ImpactNow
         }
 
-        public static (Outcome outcome, Vector3 hitPoint, float speed) Step(
+        public static (Outcome outcome, Vector3 hitPoint, Vector3 hitNormal, Entity hitEntity, float speed) Step(
             DroneState s, Vector3 prevP, float dtGame, Ped ignorePed)
         {
             float speed = s.V.Length();
@@ -63,18 +63,15 @@ namespace FpvDroneMod
 
             float bestDist = float.MaxValue;
             Vector3 bestHit = s.P;
+            Vector3 bestNormal = -dir;
+            Entity bestEntity = null;
             bool didHit = false;
 
-            // Extend each ray's origin one DroneRadius BEHIND prevP along the
-            // sweep direction. This handles the audit-#6 edge case: if the
-            // drone was already partially clipping into thin geometry
-            // (fence, vehicle bodywork) on the previous frame, prevP could
-            // be *inside* a mesh — and World.Raycast from inside a closed
-            // mesh returns DidHit=false in RAGE. Starting the ray a bit
-            // farther back guarantees the origin is outside any
-            // sub-DroneRadius-thick obstacle.
-            float backExtend = Config.DroneRadius;
-            Vector3 originBase = prevP - dir * backExtend;
+            // Start from the real swept volume front plane (prevP + offsets).
+            // We intentionally do NOT extend origin backwards, because that
+            // causes false-positive hits on surfaces the drone is already
+            // moving away from (e.g. wall behind a reversing drift).
+            Vector3 originBase = prevP;
 
             for (int i = 0; i < offsets.Length; i++)
             {
@@ -99,6 +96,10 @@ namespace FpvDroneMod
                 {
                     bestDist = d;
                     bestHit  = ray.HitPosition;
+                    bestNormal = ray.SurfaceNormal.LengthSquared() > 0.0001f
+                        ? Vector3.Normalize(ray.SurfaceNormal)
+                        : -dir;
+                    bestEntity = ray.HitEntity;
                     didHit   = true;
                 }
             }
@@ -131,15 +132,19 @@ namespace FpvDroneMod
                     {
                         bestDist = d;
                         bestHit = probe.HitPosition;
+                        bestNormal = probe.SurfaceNormal.LengthSquared() > 0.0001f
+                            ? Vector3.Normalize(probe.SurfaceNormal)
+                            : -dir;
+                        bestEntity = probe.HitEntity;
                         didHit = true;
                     }
                 }
             }
 
             if (!didHit)
-                return (Outcome.Clear, s.P, speed);
+                return (Outcome.Clear, s.P, -dir, null, speed);
 
-            return (Outcome.ImpactNow, bestHit, speed);
+            return (Outcome.ImpactNow, bestHit, bestNormal, bestEntity, speed);
         }
 
         // Spec 9.2 — explosion at hit point + Battlefield-style impulse on
@@ -218,11 +223,6 @@ namespace FpvDroneMod
                         if (blendedDir.LengthSquared() > 0.000001f)
                             blendedDir = Vector3.Normalize(blendedDir);
 
-                        // +Z component so vehicles get lifted, not just shoved
-                        // along the ground (matches RAGE's own explosion feel).
-                        blendedDir = blendedDir + new Vector3(0, 0, 0.35f);
-                        if (blendedDir.Z < 0f)
-                            blendedDir = new Vector3(blendedDir.X, blendedDir.Y, 0f);
                         if (blendedDir.LengthSquared() > 0.000001f)
                             blendedDir = Vector3.Normalize(blendedDir);
 
@@ -248,6 +248,39 @@ namespace FpvDroneMod
             {
                 // Impulse is a polish layer; never let an exception here
                 // poison the cinematic phase.
+            }
+        }
+
+        // Physical contact impulse from drone mass and impact geometry.
+        // We compute the closing speed along surface normal and apply an
+        // impulse at hit point before the explosion sequence.
+        public static void ApplyKineticImpactImpulse(
+            Entity hitEntity,
+            Vector3 hitPoint,
+            Vector3 hitNormal,
+            Vector3 droneVelocity)
+        {
+            try
+            {
+                if (hitEntity == null || !hitEntity.Exists()) return;
+
+                Vector3 relVel = droneVelocity - hitEntity.Velocity;
+                float closingSpeed = -Vector3.Dot(relVel, hitNormal);
+                if (closingSpeed <= 0.05f) return;
+
+                float j = Config.DroneMassKg * closingSpeed * Config.ImpactImpulseScale;
+                if (j <= 0.01f) return;
+
+                Vector3 impulse = relVel.LengthSquared() > 0.001f
+                    ? Vector3.Normalize(relVel) * j
+                    : -hitNormal * j;
+
+                Vector3 localOffset = Natives.GetOffsetFromEntityGivenWorldCoords(hitEntity, hitPoint);
+                Natives.ApplyForceToEntity(hitEntity, impulse, localOffset, forceType: 1);
+            }
+            catch
+            {
+                // Impact impulse should never crash flight loop.
             }
         }
     }
