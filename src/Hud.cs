@@ -84,9 +84,68 @@ namespace FpvDroneMod
             // Horizon line (center)
             DrawHorizon(s);
 
-            // Crosshair (center) — hidden in autonomous mode.
+            // FPV crosshair (center) — hidden in autonomous mode (Lost stage).
             if (s.Stage != FlightStage.Lost)
-                DrawText("·", new PointF(ScreenW / 2 - 6, ScreenH / 2 - 18), 1.0f, White);
+                DrawCrosshair(s);
+        }
+
+        // FPV-style "+" crosshair with center gap, plus a small velocity-vector
+        // dot showing where the drone is actually moving (vs. where the camera
+        // is aimed). Useful in low-throttle / strong-wind / drag scenarios.
+        private static void DrawCrosshair(DroneState s)
+        {
+            float cx = ScreenW / 2f;
+            float cy = ScreenH / 2f;
+
+            // Outer arms — leave a 6px gap around the center.
+            const float arm = 18f;
+            const float gap = 6f;
+            const float thick = 2f;
+
+            // Horizontal: left arm + right arm
+            new ContainerElement(new PointF(cx - gap - arm, cy - thick / 2f),
+                                 new SizeF(arm, thick), White).Draw();
+            new ContainerElement(new PointF(cx + gap, cy - thick / 2f),
+                                 new SizeF(arm, thick), White).Draw();
+            // Vertical: top arm + bottom arm
+            new ContainerElement(new PointF(cx - thick / 2f, cy - gap - arm),
+                                 new SizeF(thick, arm), White).Draw();
+            new ContainerElement(new PointF(cx - thick / 2f, cy + gap),
+                                 new SizeF(thick, arm), White).Draw();
+
+            // Center pip
+            new ContainerElement(new PointF(cx - 1.5f, cy - 1.5f),
+                                 new SizeF(3, 3), White).Draw();
+
+            // Velocity vector dot — project velocity onto camera basis. Only
+            // meaningful when actually moving and the velocity isn't aligned
+            // with F. Drawn cyan to differentiate from the static reticle.
+            float speed = s.V.Length();
+            if (speed > 1.5f)
+            {
+                Vector3 vDir = s.V * (1f / speed);
+                Vector3 fwd  = s.F;
+                // small-angle screen offsets via dot products with right/up
+                // approximations (camera is aligned with F + worldUp).
+                Vector3 worldUp = new Vector3(0f, 0f, 1f);
+                Vector3 right = Vector3.Cross(fwd, worldUp);
+                if (right.LengthSquared() < 1e-4f) right = new Vector3(1, 0, 0);
+                else right.Normalize();
+                Vector3 up = Vector3.Cross(right, fwd);
+                up.Normalize();
+                float xProj = Vector3.Dot(vDir, right);
+                float yProj = Vector3.Dot(vDir, up);
+                // Scale to FOV-ish pixel offset (small for forward, large when
+                // velocity diverges from gaze direction).
+                const float vecScale = 220f;
+                float vx = cx + xProj * vecScale;
+                float vy = cy - yProj * vecScale; // screen Y is inverted
+                // Clamp to ±240 px around center so it stays on the HUD area.
+                vx = Math.Max(cx - 240f, Math.Min(cx + 240f, vx));
+                vy = Math.Max(cy - 240f, Math.Min(cy + 240f, vy));
+                new ContainerElement(new PointF(vx - 3f, vy - 3f),
+                                     new SizeF(6, 6), Cyan).Draw();
+            }
         }
 
         private static void DrawStatusBanner(DroneState s)

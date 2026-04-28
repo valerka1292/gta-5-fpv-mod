@@ -29,6 +29,7 @@ namespace FpvDroneMod
         private DroneState _state;
         private Camera _fpvCam;
         private bool _flying;
+        private bool _mouseFirstFrame = true;
 
         // Realtime stopwatch — used for slow-mo, lost timer, recovery, etc. so
         // we don't depend on Game.LastFrameTime which is in game-time and gets
@@ -65,10 +66,19 @@ namespace FpvDroneMod
             InputDistortion.Reset();
 
 #pragma warning disable CS0618 // World.CreateCamera + RenderingCamera deprecated in v3.7 nightly but still functional
-            _fpvCam = World.CreateCamera(_state.P, Vector3.Zero, Config.FpvFov);
+            // Spawn camera looking the same way the player was — so the first
+            // frame doesn't snap-yaw to north.
+            _fpvCam = World.CreateCamera(_state.P,
+                new Vector3(_state.Theta * MathF.Rad2Deg, 0f, _state.Psi * MathF.Rad2Deg),
+                Config.FpvFov);
             World.RenderingCamera = _fpvCam;
 #pragma warning restore CS0618
 
+            // Seed s.F from the live camera so frame 0 physics aren't garbage.
+            _state.F = _fpvCam.ForwardVector;
+
+            _mouseFirstFrame = true;
+            MouseCapture.Recenter();
             _flying = true;
         }
 
@@ -169,9 +179,12 @@ namespace FpvDroneMod
             // 13.3 Block all 3 control groups.
             Natives.DisableAllControlsThisFrame();
 
-            // 13.5 Read mouse via disabled-control normals.
-            float dmxRaw = Natives.GetDisabledControlNormal(0, /*LookLeftRight*/1);
-            float dmyRaw = Natives.GetDisabledControlNormal(0, /*LookUpDown*/  2);
+            // 13.5 Read mouse via Win32 raw cursor delta. The disabled-control
+            // path returns 0 here because the gameplay camera is replaced by a
+            // scripted camera and the engine stops feeding LookLeftRight/UpDown.
+            var (mdx, mdy) = MouseCapture.ReadDelta(ref _mouseFirstFrame);
+            float dmxRaw = mdx / Config.MousePixelsPerUnit;
+            float dmyRaw = mdy / Config.MousePixelsPerUnit;
 
             // 13.7 Vertical input — read PgUp/PgDn directly via Win32 (works
             // independently of the GTA control system).
@@ -210,6 +223,19 @@ namespace FpvDroneMod
             Physics.ApplyAngularInput(_state, dmx, dmy, dtGame);
             Physics.UpdateCameraRoll(_state, dmx, dtGame);
 
+            // Apply the new orientation to the camera FIRST, then read its
+            // engine-canonical forward vector. This guarantees physics moves
+            // the drone in the exact direction the camera is looking — no
+            // matter which Euler-angle convention SHVDN/GTA actually use.
+            if (_fpvCam != null && _fpvCam.Exists())
+            {
+                _fpvCam.Rotation = new Vector3(
+                    _state.Theta  * MathF.Rad2Deg,
+                    _state.PhiCam * MathF.Rad2Deg,
+                    _state.Psi    * MathF.Rad2Deg);
+                _state.F = _fpvCam.ForwardVector;
+            }
+
             // 13.24-30 Velocity / position integration. Battery dead → motors
             // off (T=0), drag mode = dead.
             if (batteryDead) _state.T = 0f;
@@ -245,15 +271,10 @@ namespace FpvDroneMod
             Natives.SetEntityHeading(ped, _state.Psi * MathF.Rad2Deg);
             Natives.SetRadarAsExteriorThisFrame();
 
-            // 13.37 Camera update (rad → deg, spec B3).
+            // 13.37 Camera position update — rotation was already applied
+            // above so we could read the canonical forward vector.
             if (_fpvCam != null && _fpvCam.Exists())
-            {
                 _fpvCam.Position = _state.P;
-                _fpvCam.Rotation = new Vector3(
-                    _state.Theta  * MathF.Rad2Deg,
-                    _state.PhiCam * MathF.Rad2Deg,
-                    _state.Psi    * MathF.Rad2Deg);
-            }
 
             // 13.38 Drone whine — intentionally skipped (no audio in this rev).
 
@@ -273,5 +294,43 @@ namespace FpvDroneMod
     {
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern short GetAsyncKeyState(int vKey);
+    }
+
+    // Raw mouse-delta capture. We can't use GET_DISABLED_CONTROL_NORMAL for
+    // LookLeftRight/LookUpDown because the gameplay camera is replaced by a
+    // scripted camera (World.RenderingCamera) and the engine stops feeding
+    // those controls. Instead we sample the OS cursor every frame and snap it
+    // back to screen centre so we always read a true delta.
+    internal static class MouseCapture
+    {
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        public struct Win32Point { public int X; public int Y; }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool GetCursorPos(out Win32Point lpPoint);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        public static int CenterX => System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width  / 2;
+        public static int CenterY => System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height / 2;
+
+        // Returns (dx, dy) in pixels since last call, then snaps cursor back
+        // to screen centre. The first call after Reset() returns (0, 0) so the
+        // initial cursor position doesn't get interpreted as a giant flick.
+        public static (int dx, int dy) ReadDelta(ref bool firstFrame)
+        {
+            int cx = CenterX;
+            int cy = CenterY;
+            Win32Point p;
+            GetCursorPos(out p);
+            int dx = p.X - cx;
+            int dy = p.Y - cy;
+            SetCursorPos(cx, cy);
+            if (firstFrame) { firstFrame = false; dx = 0; dy = 0; }
+            return (dx, dy);
+        }
+
+        public static void Recenter() { SetCursorPos(CenterX, CenterY); }
     }
 }

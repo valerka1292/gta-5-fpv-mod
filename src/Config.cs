@@ -84,5 +84,10 @@ namespace FpvDroneMod
         public const int FpvFov = 80;
         public const float SpawnHeight = 3.0f;
         public const int PlayerAlpha = 100;
+
+        // Win32 raw-mouse capture: pixels of cursor delta = 1.0 normalized
+        // input unit. Lower = more sensitive. 100 px ≈ a comfortable flick at
+        // a full pass of S_yaw per frame.
+        public const float MousePixelsPerUnit = 100.0f;
     }
 }

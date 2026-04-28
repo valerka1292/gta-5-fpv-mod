@@ -9,12 +9,16 @@ namespace FpvDroneMod
     {
         public static Vector3 ForwardFromYawPitch(float psi, float theta)
         {
-            // F = (sin ψ cos θ, cos ψ cos θ, -sin θ)
+            // Spec wrote F.z = -sin(θ), but spec convention is "θ < 0 → nose
+            // down" — those two are inconsistent. With the spec formula and
+            // initial θ = -0.3 ("nose down") the drone's F.z evaluates to
+            // +0.295 and the drone CLIMBS at launch. Correct convention:
+            // F.z = +sin(θ).  θ<0 (nose down) → F.z<0 → drone descends.
             float sp = (float)Math.Sin(psi);
             float cp = (float)Math.Cos(psi);
             float st = (float)Math.Sin(theta);
             float ct = (float)Math.Cos(theta);
-            return new Vector3(sp * ct, cp * ct, -st);
+            return new Vector3(sp * ct, cp * ct, st);
         }
 
         public static float Lerp(float a, float b, float k) => a + (b - a) * Clamp01(k);
@@ -25,10 +29,15 @@ namespace FpvDroneMod
             => v < lo ? lo : (v > hi ? hi : v);
 
         // 4.1 Yaw / pitch — frame-rate independent (multiplied by dt*60).
+        // Sign convention (FPS-natural):
+        //   dmx > 0 (mouse moved right) → drone yaws RIGHT (looks east-ish from
+        //   north). Since GTA's heading angle is CCW from north, "yaw right"
+        //   means the heading angle DECREASES, hence the leading minus sign.
+        //   dmy > 0 (mouse moved down)  → nose drops, θ decreases.
         public static void ApplyAngularInput(DroneState s, float dmx, float dmy, float dt)
         {
             float scale = dt * 60.0f;
-            float psiRate = dmx * Config.SYaw * scale;
+            float psiRate = -dmx * Config.SYaw * scale;
             s.Psi += psiRate;
             s.LastPsiRate = psiRate;
 
@@ -55,9 +64,13 @@ namespace FpvDroneMod
         }
 
         // 4.3-4.9 — Velocity / position integration.
+        // F is pre-computed by the caller from the live camera.ForwardVector
+        // (after Camera.Rotation was set). This sidesteps any axis-convention
+        // mismatch between the spec formula and how SHVDN/GTA build the camera
+        // basis from (pitch, roll, yaw) Euler angles — the engine is canonical.
         public static void IntegrateMotion(DroneState s, float vVert, float dt, bool batteryDead)
         {
-            Vector3 F = ForwardFromYawPitch(s.Psi, s.Theta);
+            Vector3 F = s.F; // refreshed earlier this tick
 
             // 6.3 V_sink when low battery (only if not fully dead — once dead T=0 anyway)
             Vector3 vSink = Vector3.Zero;

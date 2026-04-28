@@ -140,8 +140,7 @@ namespace FpvDroneMod
         // inside a wall.
         private static Vector3 ChooseCinematicCameraPosition(DroneState s, Vector3 hitPoint, Ped ignorePed)
         {
-            Vector3 F = Physics.ForwardFromYawPitch(s.Psi, s.Theta);
-            Vector3 back = -F;
+            Vector3 back = -s.F;
             Vector3 candidate = hitPoint + back * Config.DCam + new Vector3(0, 0, Config.HCam);
 
             var checkRay = World.Raycast(hitPoint, candidate, IntersectFlags.Map, ignorePed);

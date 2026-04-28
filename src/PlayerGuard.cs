@@ -52,6 +52,12 @@ namespace FpvDroneMod
             Natives.SetEntityInvincible(ped, true);
             Natives.SetPlayerInvincible(player, true);
             Natives.SetPedCanRagdoll(ped, false);
+            // Hide ped fully — alpha=100 leaves the FPV camera (which sits at
+            // the ped's coords) seeing the legs/arms from inside the model.
+            // Trade-off: NPC/cops can no longer see the player either, so the
+            // "under-fire ghost" atmosphere from the spec is weaker. User
+            // explicitly preferred not seeing their own legs.
+            ped.IsVisible = false;
             Natives.SetEntityAlpha(ped, Config.PlayerAlpha, false);
 
             Natives.SetWantedLevelMultiplier(0.0f);
@@ -90,6 +96,7 @@ namespace FpvDroneMod
             Natives.SetEntityInvincible(ped, s.PedInvincibleBefore);
             Natives.SetPlayerInvincible(player, s.PlayerInvincibleBefore);
             Natives.SetPedCanRagdoll(ped, s.PedCanRagdollBefore);
+            ped.IsVisible = true;
             Natives.ResetEntityAlpha(ped);
 
             Natives.SetWantedLevelMultiplier(s.WantedMultiplierBefore);

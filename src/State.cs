@@ -14,6 +14,7 @@ namespace FpvDroneMod
     {
         public Vector3 P;            // drone position
         public Vector3 V;            // drone velocity
+        public Vector3 F = new Vector3(0, 1, 0); // forward, refreshed each tick from cam.ForwardVector
         public float Psi;            // yaw, rad
         public float Theta;          // pitch, rad
         public float PhiCam;         // camera roll, rad

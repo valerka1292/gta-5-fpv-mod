@@ -23,8 +23,7 @@ namespace FpvDroneMod
             // ray_length = max(|V| * dt * 1.5, |V| * 0.35)
             float rayLen = Math.Max(speed * dtGame * 1.5f, speed * 0.35f);
 
-            Vector3 F = Physics.ForwardFromYawPitch(s.Psi, s.Theta);
-            Vector3 end = s.P + F * rayLen;
+            Vector3 end = s.P + s.F * rayLen;
 
             // Use Everything (511) so vehicles/peds/objects/map/glass all hit.
             // The player ped is excluded — that's the whole point of A7.

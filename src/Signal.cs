@@ -87,7 +87,7 @@ namespace FpvDroneMod
                             s.Stage = FlightStage.Lost;
                             s.LostTimerRealtime = 0;
                             // Lock heading on entry: F_last_known = F now
-                            s.FLastKnown = Physics.ForwardFromYawPitch(s.Psi, s.Theta);
+                            s.FLastKnown = s.F;
                             s.TLast = s.T;
                         }
                     }
