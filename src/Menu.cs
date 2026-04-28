@@ -100,8 +100,8 @@ namespace FpvDroneMod
         {
             if (!_open) return;
 
-            float W = Screen.Width;
-            float H = Screen.Height;
+            float W = GTA.UI.Screen.Width;
+            float H = GTA.UI.Screen.Height;
 
             const float menuW = 500f;
             const float headerH = 28f;
