@@ -155,25 +155,17 @@ namespace FpvDroneMod
 
             if (!_flying) return;
 
-            // Slow-mo state machine. New "camera = warhead" model:
-            //   * Approach phase keeps physics running so the FPV camera
-            //     visibly closes the gap to the wall (TimeScale already
-            //     ramped down → drone moves slowly).
-            //   * Hold / RampUp phases freeze input + simulation entirely
-            //     and just play out the cinematic.
+            // Slow-mo state machine takes priority once started — physics +
+            // input are frozen for the cinematic. Slow-mo is now triggered
+            // only by an actual contact-frame collision (no predictive
+            // slow-down before impact); see Collision.Step.
             if (_slowMo.Active)
             {
                 _slowMo.Update(_state);
-
-                if (!_slowMo.AllowsPhysics)
-                {
-                    Hud.Draw(_state, Config.FpvFov);
-                    Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f));
-                    if (_slowMo.ReadyForExit) EndFlight();
-                    return;
-                }
-                // else: fall through into the regular flight loop so the drone
-                // continues to advance toward the hit point.
+                Hud.Draw(_state, Config.FpvFov);
+                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f));
+                if (_slowMo.ReadyForExit) EndFlight();
+                return;
             }
 
             // Pause menu — freeze simulation, keep camera, skip input.
@@ -269,34 +261,23 @@ namespace FpvDroneMod
             if (batteryDead) _state.T = 0f;
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
-            // 13.31-33 Forward raycast.
-            //   * If we're already in slow-mo Approach, the predictive ray is
-            //     advisory only — proximity check below decides detonation.
-            //   * Otherwise: ImpactImminent triggers BeginApproach (start
-            //     ramping TimeScale down). ImpactNow (drone already at the
-            //     wall) triggers immediate TriggerDetonate.
+            // 13.31-33 Forward raycast — pure contact detection, no
+            // predictive look-ahead.
             var (outcome, hit, speed) = Collision.Step(_state, dtGame, ped);
-
-            if (!_slowMo.Active)
+            if (outcome == Collision.Outcome.ImpactNow)
             {
-                if (outcome == Collision.Outcome.ImpactNow)
-                {
-                    _slowMo.BeginApproach(hit);   // sets up state
-                    _slowMo.TriggerDetonate(_state, _fpvCam, ped); // detonate on same frame
-                    return;
-                }
-                else if (outcome == Collision.Outcome.ImpactImminent)
-                {
-                    _state.ImpactImminent = true;
-                    _slowMo.BeginApproach(hit);
-                    // continue this frame's loop so physics still updates
-                }
-            }
+                // Snap the drone (and therefore the FPV camera) to just
+                // shy of the surface so the player sees the wall fill the
+                // viewport at the exact moment slow-mo kicks in. We back
+                // off by SnapInset metres along F so the camera doesn't
+                // poke through the texture.
+                _state.P = hit - _state.F * Config.SnapInset;
+                _state.V = Vector3.Zero;
+                if (_fpvCam != null && _fpvCam.Exists())
+                    _fpvCam.Position = _state.P;
 
-            // Proximity-based detonation while in Approach phase.
-            if (_slowMo.Active && _slowMo.ShouldDetonate(_state))
-            {
-                _slowMo.TriggerDetonate(_state, _fpvCam, ped);
+                _state.ImpactImminent = true;
+                _slowMo.Begin(_state, _fpvCam, hit, ped);
                 return;
             }
 

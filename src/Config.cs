@@ -84,15 +84,13 @@ namespace FpvDroneMod
         public const float DCam = 6.0f;
         public const float HCam = 2.0f;
         public const float CamMinClearance = 2.0f;
-        // Distance from drone to predicted hit point at which we declare
-        // contact and fire the explosion. 0.4 m = roughly the half-width of a
-        // small drone.
-        public const float DetonationProximity = 0.4f;
-        // Hard timeout for the approach phase. If the user steered after the
-        // predictive ray triggered slow-mo and the drone never quite reaches
-        // the original hit point, we detonate at the current drone position
-        // so the kamikaze always finishes its mission.
-        public const float MaxApproachSeconds = 3.0f;
+        // Extra distance added to the per-frame travel ray. Acts as the
+        // "feeler" margin so very slow ramming into a wall still detonates,
+        // and as an anti-tunneling safety on the high-speed end.
+        public const float ContactMargin = 0.30f;
+        // After contact, the drone is snapped to hit_point − F * SnapInset so
+        // the FPV camera "kisses" the surface but doesn't penetrate it.
+        public const float SnapInset = 0.05f;
 
         // 12 HUD
         public const float KHorizonScale = 150.0f;  // px / rad
