@@ -91,7 +91,8 @@ namespace FpvDroneMod
                 // backward by DroneRadius.
                 Vector3 fromPrev = ray.HitPosition - prevP;
                 float along = Vector3.Dot(fromPrev, dir);
-                if (along < -0.05f) continue;
+                float margin = Math.Max(0.05f, Config.DroneRadius * 0.5f);
+                if (along < -margin) continue;
 
                 float d = (ray.HitPosition - origin).Length();
                 if (d < bestDist)
@@ -99,6 +100,39 @@ namespace FpvDroneMod
                     bestDist = d;
                     bestHit  = ray.HitPosition;
                     didHit   = true;
+                }
+            }
+
+            if (!didHit)
+            {
+                // Fallback proximity probes for near-overlap cases where sweep
+                // ray misses thin geometry at a shallow angle.
+                Vector3[] probeOffsets = new Vector3[]
+                {
+                    dir * r,
+                    -dir * r,
+                    axisA * r,
+                    -axisA * r,
+                    axisB * r,
+                    -axisB * r,
+                };
+
+                for (int i = 0; i < probeOffsets.Length; i++)
+                {
+                    var probe = World.Raycast(s.P, s.P + probeOffsets[i],
+                                              IntersectFlags.Everything, ignorePed);
+                    if (!probe.DidHit) continue;
+
+                    Vector3 dp = probe.HitPosition - prevP;
+                    if (Vector3.Dot(dp, dir) < -0.05f) continue;
+
+                    float d = (probe.HitPosition - s.P).Length();
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        bestHit = probe.HitPosition;
+                        didHit = true;
+                    }
                 }
             }
 
@@ -170,10 +204,16 @@ namespace FpvDroneMod
                         float approachWeight = falloff; // 1.0 at hit, 0 at radius
                         Vector3 blendedDir = radialDir * (1.0f - approachWeight)
                                            + approachDir * approachWeight;
+                        if (blendedDir.LengthSquared() > 0.000001f)
+                            blendedDir = Vector3.Normalize(blendedDir);
 
                         // +Z component so vehicles get lifted, not just shoved
                         // along the ground (matches RAGE's own explosion feel).
-                        blendedDir = blendedDir + new Vector3(0, 0, 0.4f);
+                        blendedDir = blendedDir + new Vector3(0, 0, 0.35f);
+                        if (blendedDir.Z < 0f)
+                            blendedDir = new Vector3(blendedDir.X, blendedDir.Y, 0f);
+                        if (blendedDir.LengthSquared() > 0.000001f)
+                            blendedDir = Vector3.Normalize(blendedDir);
 
                         Vector3 force = blendedDir
                                         * Config.VehicleImpulsePerSpeed
