@@ -155,12 +155,6 @@ namespace FpvDroneMod
                 case Keys.H:
                     EndFlight();
                     break;
-                case Keys.T:
-                    Physics.AdjustThrottle(_state, +Config.DTStep);
-                    break;
-                case Keys.Y:
-                    Physics.AdjustThrottle(_state, -Config.DTStep);
-                    break;
             }
         }
 
@@ -240,6 +234,10 @@ namespace FpvDroneMod
             float vVert = 0f;
             if ((NativeKey.GetAsyncKeyState((int)Keys.PageUp) & 0x8000) != 0) vVert += Config.VVertStep;
             if ((NativeKey.GetAsyncKeyState((int)Keys.PageDown) & 0x8000) != 0) vVert -= Config.VVertStep;
+            if ((NativeKey.GetAsyncKeyState((int)Keys.T) & 0x8000) != 0)
+                Physics.AdjustThrottle(_state, +Config.ThrottleRate * dtGame);
+            if ((NativeKey.GetAsyncKeyState((int)Keys.Y) & 0x8000) != 0)
+                Physics.AdjustThrottle(_state, -Config.ThrottleRate * dtGame);
 
             // 13.8 Battery
             Physics.DrainBattery(_state, dtGame);
@@ -269,7 +267,7 @@ namespace FpvDroneMod
             _state.LastDmx = dmx; _state.LastDmy = dmy;
 
             // 13.20-23 Angular update + roll + forward vector.
-            Physics.ApplyAngularInput(_state, dmx, dmy, dtGame);
+            Physics.ApplyAngularInput(_state, dmx, dmy, dtGame, _state.Stage);
             Physics.UpdateCameraRoll(_state, dmx, dtGame);
 
             // Apply the new orientation to the camera FIRST, then read its

@@ -15,7 +15,7 @@ namespace FpvDroneMod
         public static void RefreshLineOfSight(DroneState s, Ped ignorePed)
         {
             var ray = World.Raycast(s.Spawn, s.P,
-                                    IntersectFlags.Map,
+                                    IntersectFlags.Map | IntersectFlags.Objects,
                                     ignorePed);
             if (!ray.DidHit)
             {
@@ -40,14 +40,15 @@ namespace FpvDroneMod
             Vector3 from = a;
             for (int i = 0; i < maxWalls + 1; i++)
             {
-                var ray = World.Raycast(from, b, IntersectFlags.Map, ignore);
+                var ray = World.Raycast(from, b, IntersectFlags.Map | IntersectFlags.Objects, ignore);
                 if (!ray.DidHit) break;
                 walls++;
                 Vector3 dir = (b - from);
                 float len = dir.Length();
                 if (len < 0.01f) break;
                 dir = dir / len;
-                from = ray.HitPosition + dir * 0.5f; // step past the hit
+                float stepDist = Math.Max(0.5f, len * 0.05f);
+                from = ray.HitPosition + dir * stepDist; // adaptive step
                 if ((b - from).Length() < 0.5f) break;
             }
             return walls;
