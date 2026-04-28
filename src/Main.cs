@@ -155,15 +155,25 @@ namespace FpvDroneMod
 
             if (!_flying) return;
 
-            // Slow-mo end-game state machine takes priority — once we're in it,
-            // physics + collision + input are frozen.
+            // Slow-mo state machine. New "camera = warhead" model:
+            //   * Approach phase keeps physics running so the FPV camera
+            //     visibly closes the gap to the wall (TimeScale already
+            //     ramped down → drone moves slowly).
+            //   * Hold / RampUp phases freeze input + simulation entirely
+            //     and just play out the cinematic.
             if (_slowMo.Active)
             {
                 _slowMo.Update(_state);
-                Hud.Draw(_state, Config.FpvFov);
-                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f)); // crank during impact
-                if (_slowMo.ReadyForExit) EndFlight();
-                return;
+
+                if (!_slowMo.AllowsPhysics)
+                {
+                    Hud.Draw(_state, Config.FpvFov);
+                    Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f));
+                    if (_slowMo.ReadyForExit) EndFlight();
+                    return;
+                }
+                // else: fall through into the regular flight loop so the drone
+                // continues to advance toward the hit point.
             }
 
             // Pause menu — freeze simulation, keep camera, skip input.
@@ -260,18 +270,34 @@ namespace FpvDroneMod
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
             // 13.31-33 Forward raycast.
+            //   * If we're already in slow-mo Approach, the predictive ray is
+            //     advisory only — proximity check below decides detonation.
+            //   * Otherwise: ImpactImminent triggers BeginApproach (start
+            //     ramping TimeScale down). ImpactNow (drone already at the
+            //     wall) triggers immediate TriggerDetonate.
             var (outcome, hit, speed) = Collision.Step(_state, dtGame, ped);
-            if (outcome == Collision.Outcome.ImpactNow)
+
+            if (!_slowMo.Active)
             {
-                Collision.Detonate(hit, speed);
-                EndFlight();
-                return;
+                if (outcome == Collision.Outcome.ImpactNow)
+                {
+                    _slowMo.BeginApproach(hit);   // sets up state
+                    _slowMo.TriggerDetonate(_state, _fpvCam, ped); // detonate on same frame
+                    return;
+                }
+                else if (outcome == Collision.Outcome.ImpactImminent)
+                {
+                    _state.ImpactImminent = true;
+                    _slowMo.BeginApproach(hit);
+                    // continue this frame's loop so physics still updates
+                }
             }
-            else if (outcome == Collision.Outcome.ImpactImminent)
+
+            // Proximity-based detonation while in Approach phase.
+            if (_slowMo.Active && _slowMo.ShouldDetonate(_state))
             {
-                _state.ImpactImminent = true;
-                _slowMo.Begin(_state, _fpvCam, hit, ped);
-                return; // next tick will run slow-mo update
+                _slowMo.TriggerDetonate(_state, _fpvCam, ped);
+                return;
             }
 
             // 13.34 Emergency boundary check.

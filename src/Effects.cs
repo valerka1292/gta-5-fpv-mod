@@ -47,9 +47,11 @@ namespace FpvDroneMod
             _currentTier = -1;
         }
 
-        // Per-frame UI overlays. Pass screen size hints if we want to be exact.
-        private const float W = 1920f;
-        private const float H = 1080f;
+        // Per-frame UI overlays. Use the live UI canvas dimensions
+        // (Screen.Width × Screen.Height) so overlays cover the whole screen
+        // independent of game resolution / aspect ratio.
+        private static float W => GTA.UI.Screen.Width;
+        private static float H => GTA.UI.Screen.Height;
 
         public static void DrawOverlays(float I)
         {

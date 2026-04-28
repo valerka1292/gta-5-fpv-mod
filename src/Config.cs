@@ -79,11 +79,20 @@ namespace FpvDroneMod
         // 10 Slow-mo
         public const float TimeScaleSlow = 0.15f;
         public const float TimeScaleRamp = 0.1f;    // realtime
-        public const float CamTransition = 0.08f;   // realtime
+        public const float CamTransition = 0.08f;   // realtime (legacy, unused)
         public const float CamHoldAfterExplosion = 2.0f;
         public const float DCam = 6.0f;
         public const float HCam = 2.0f;
         public const float CamMinClearance = 2.0f;
+        // Distance from drone to predicted hit point at which we declare
+        // contact and fire the explosion. 0.4 m = roughly the half-width of a
+        // small drone.
+        public const float DetonationProximity = 0.4f;
+        // Hard timeout for the approach phase. If the user steered after the
+        // predictive ray triggered slow-mo and the drone never quite reaches
+        // the original hit point, we detonate at the current drone position
+        // so the kamikaze always finishes its mission.
+        public const float MaxApproachSeconds = 3.0f;
 
         // 12 HUD
         public const float KHorizonScale = 150.0f;  // px / rad
