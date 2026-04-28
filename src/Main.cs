@@ -74,8 +74,11 @@ namespace FpvDroneMod
             World.RenderingCamera = _fpvCam;
 #pragma warning restore CS0618
 
-            // Seed s.F from the live camera so frame 0 physics aren't garbage.
-            _state.F = _fpvCam.ForwardVector;
+            // Seed s.F from the analytical formula. We CANNOT call
+            // _fpvCam.ForwardVector here — the engine hasn't registered the
+            // script camera until the next render frame, and SHVDN's
+            // NativeMemory.GetCameraAddress() returns null → NRE.
+            _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
 
             _mouseFirstFrame = true;
             MouseCapture.Recenter();
@@ -227,13 +230,28 @@ namespace FpvDroneMod
             // engine-canonical forward vector. This guarantees physics moves
             // the drone in the exact direction the camera is looking — no
             // matter which Euler-angle convention SHVDN/GTA actually use.
+            // Reading ForwardVector can NRE on the very first frame (engine
+            // hasn't registered the cam yet) — fall back to analytical.
             if (_fpvCam != null && _fpvCam.Exists())
             {
                 _fpvCam.Rotation = new Vector3(
                     _state.Theta  * MathF.Rad2Deg,
                     _state.PhiCam * MathF.Rad2Deg,
                     _state.Psi    * MathF.Rad2Deg);
-                _state.F = _fpvCam.ForwardVector;
+                try
+                {
+                    Vector3 fwd = _fpvCam.ForwardVector;
+                    if (fwd.LengthSquared() > 0.5f) _state.F = fwd;
+                    else _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+                }
+                catch
+                {
+                    _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+                }
+            }
+            else
+            {
+                _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
             }
 
             // 13.24-30 Velocity / position integration. Battery dead → motors

@@ -10,11 +10,13 @@ namespace FpvDroneMod
         public const float SPitch = 0.06f;          // mouse → pitch rate
         public const float ThetaMax = 1.2f;         // pitch clamp (rad)
 
-        // 4.2 Roll camera
-        public const float KRoll = 10.0f;
+        // 4.2 Roll camera. Casual tuning: KRoll halved (10 → 4) and PhiMax
+        // tightened so the screen doesn't visibly twist during fast yaws —
+        // FPV-pilot eye candy that confused first-time fliers.
+        public const float KRoll = 4.0f;
         public const float KRollResponse = 7.0f;
-        public const float KRollRecovery = 5.0f;
-        public const float PhiMax = 0.52f;
+        public const float KRollRecovery = 6.0f;
+        public const float PhiMax = 0.30f;
 
         // 4.4 Throttle
         public const float TMin = 0.0f;
@@ -26,10 +28,17 @@ namespace FpvDroneMod
         public const float VVertStep = 8.0f;        // PgUp/PgDn
 
         // 4.6 Gravity
-        public const float GWorld = 4.0f;           // m/s²
+        // Casual tuning: spec value 4.0 produced an obvious "sag" at any
+        // throttle below max (g_eff = GWorld * (1 - T/TMax)). At 1.0 the drone
+        // basically holds altitude as long as there is some throttle — much
+        // more intuitive for a casual flier. Battery-dead path uses full GWorld.
+        public const float GWorld = 1.0f;           // m/s²
 
         // 4.7-4.8 Inertia + drag
-        public const float KInertia = 5.0f;
+        // Casual tuning: KInertia 5 → 25 makes V chase V_target almost
+        // instantly (≈ 40 ms time constant). The drone "snaps" to the camera
+        // direction instead of drifting on its own momentum.
+        public const float KInertia = 25.0f;
         public const float KInertiaDead = 1.0f;
         public const float CDrag = 0.020f;
         public const float CDragDead = 0.05f;
@@ -86,8 +95,10 @@ namespace FpvDroneMod
         public const int PlayerAlpha = 100;
 
         // Win32 raw-mouse capture: pixels of cursor delta = 1.0 normalized
-        // input unit. Lower = more sensitive. 100 px ≈ a comfortable flick at
-        // a full pass of S_yaw per frame.
-        public const float MousePixelsPerUnit = 100.0f;
+        // input unit. Lower = more sensitive. 250 px is a forgiving default
+        // tuned for casual play — first-time fliers who haven't pre-scaled
+        // their mouse for a 0.08 rad/frame yaw factor don't get whipped
+        // around. FPV pilots can drop this toward 100 if it feels sluggish.
+        public const float MousePixelsPerUnit = 250.0f;
     }
 }

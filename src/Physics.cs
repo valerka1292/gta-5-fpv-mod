@@ -7,18 +7,26 @@ namespace FpvDroneMod
     // Pure functions over DroneState; no engine calls.
     internal static class Physics
     {
+        // Analytical fallback for the camera's forward vector. Used as the
+        // first-frame seed (engine hasn't registered the script camera yet,
+        // so Camera.ForwardVector NREs in NativeMemory.GetCameraAddress) and
+        // as a try/catch fallback if reading from the camera ever fails.
+        //
+        // Convention: psi is GTA-heading-style (CCW from +Y north when viewed
+        // from above), theta is pitch where +theta = nose up. Matching GTA's
+        // Camera.Rotation = (pitchDeg, rollDeg, yawDeg) basis:
+        //
+        //   pitch=0, yaw=0   -> (0, 1, 0)         north
+        //   pitch=0, yaw=90  -> (-1, 0, 0)        west   (CCW)
+        //   pitch=+90        -> (0, 0, 1)         straight up
+        //   pitch=-90        -> (0, 0, -1)        straight down
         public static Vector3 ForwardFromYawPitch(float psi, float theta)
         {
-            // Spec wrote F.z = -sin(θ), but spec convention is "θ < 0 → nose
-            // down" — those two are inconsistent. With the spec formula and
-            // initial θ = -0.3 ("nose down") the drone's F.z evaluates to
-            // +0.295 and the drone CLIMBS at launch. Correct convention:
-            // F.z = +sin(θ).  θ<0 (nose down) → F.z<0 → drone descends.
             float sp = (float)Math.Sin(psi);
             float cp = (float)Math.Cos(psi);
             float st = (float)Math.Sin(theta);
             float ct = (float)Math.Cos(theta);
-            return new Vector3(sp * ct, cp * ct, st);
+            return new Vector3(-sp * ct, cp * ct, st);
         }
 
         public static float Lerp(float a, float b, float k) => a + (b - a) * Clamp01(k);
