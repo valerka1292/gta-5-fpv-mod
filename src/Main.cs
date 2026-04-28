@@ -329,7 +329,7 @@ namespace FpvDroneMod
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
             // 13.31-33 Swept-volume contact ray (prevP → curP + margin).
-            var (outcome, hit, speed) = Collision.Step(_state, prevP, dtGame, ped);
+            var (outcome, hit, hitNormal, hitEntity, speed) = Collision.Step(_state, prevP, dtGame, ped);
             if (outcome == Collision.Outcome.ImpactNow)
             {
                 // Snap the drone (and therefore the FPV camera) to just
@@ -345,6 +345,7 @@ namespace FpvDroneMod
                 // Capture impact speed BEFORE we zero out V so the explosion
                 // and vehicle-impulse can scale by how hard we actually hit.
                 float impactSpeed = _state.V.Length();
+                Vector3 impactVelocity = _state.V;
 
                 // Capture pre-snap camera position so SlowMoFinal can start
                 // its cinematic interpolation from where the player was
@@ -363,6 +364,7 @@ namespace FpvDroneMod
                     _fpvCam.Position = _state.P;
 
                 _state.ImpactImminent = true;
+                Collision.ApplyKineticImpactImpulse(hitEntity, hit, hitNormal, impactVelocity);
                 AudioManager.OnCrash();
                 _slowMo.Begin(_state, _fpvCam, hit, approachDir, impactSpeed,
                               fpvCamPrePos, ped);
