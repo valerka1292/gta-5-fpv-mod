@@ -1,20 +1,7 @@
+using System.Collections.Generic;
+
 namespace FpvDroneMod
 {
-    // Runtime-mutable configuration that lives outside Config.cs (Config is
-    // const). Set from Menu.cs; consumed by Collision.Detonate and friends.
-    //
-    // The explosion-type IDs come from GTA V's native ExplosionType enum
-    // (see ADD_EXPLOSION) — the user's reference list:
-    //
-    //    0  Grenade           — classic burst, grey smoke
-    //    1  Grenade Launcher  — slightly tighter flash
-    //    2  Sticky Bomb       — clean compact burst
-    //    4  Rocket / RPG      — large fireball, dense black smoke
-    //    5  Tank Shell        — sharp, almost smokeless flash, very lethal
-    //    7  Car               — fuel-tank-style long burn
-    //    8  Plane             — huge radius, lots of debris
-    //    9  Petrol Pump       — fire mushroom
-    //   29  Blimp             — biggest in-game explosion
     internal static class Settings
     {
         public struct ExplosionPreset
@@ -24,24 +11,110 @@ namespace FpvDroneMod
             public ExplosionPreset(int id, string name) { Id = id; Name = name; }
         }
 
-        public static readonly ExplosionPreset[] ExplosionPresets = new ExplosionPreset[]
+        public class PayloadCategory
         {
-            new ExplosionPreset(0,  "Grenade"),
-            new ExplosionPreset(1,  "Grenade Launcher"),
-            new ExplosionPreset(2,  "Sticky Bomb"),
-            new ExplosionPreset(4,  "Rocket / RPG"),
-            new ExplosionPreset(5,  "Tank Shell"),
-            new ExplosionPreset(7,  "Car"),
-            new ExplosionPreset(8,  "Plane"),
-            new ExplosionPreset(9,  "Petrol Pump"),
-            new ExplosionPreset(29, "Blimp"),
+            public string Name;
+            public ExplosionPreset[] Presets;
+            public PayloadCategory(string name, ExplosionPreset[] presets)
+            {
+                Name = name;
+                Presets = presets;
+            }
+        }
+
+        // State to keep track of selected payload
+        public static ExplosionPreset ActivePayload = new ExplosionPreset(1, "💣 Граната");
+
+        public static int CurrentExplosionId => ActivePayload.Id;
+        public static string CurrentExplosionName => ActivePayload.Name;
+
+        public static readonly PayloadCategory[] Categories = new PayloadCategory[]
+        {
+            new PayloadCategory("🔴 Супер-оружие", new ExplosionPreset[] {
+                new ExplosionPreset(78, "☢️ Ядерный взрыв"),
+                new ExplosionPreset(60, "🛰️ Орбитальная пушка"),
+                new ExplosionPreset(68, "⚡ Рельсотрон")
+            }),
+            new PayloadCategory("💣 Авиабомбы", new ExplosionPreset[] {
+                new ExplosionPreset(85, "✈️ Стандартная авиабомба"),
+                new ExplosionPreset(48, "✈️ Взведенная авиабомба"),
+                new ExplosionPreset(45, "💥 Кассетная бомба"),
+                new ExplosionPreset(47, "🔥 Зажигательная бомба"),
+                new ExplosionPreset(75, "💧 Водяная бомба"),
+                new ExplosionPreset(76, "💧 Малая водяная бомба")
+            }),
+            new PayloadCategory("🚀 Ракеты", new ExplosionPreset[] {
+                new ExplosionPreset(5, "🚀 РПГ"),
+                new ExplosionPreset(58, "🎯 Ракета авиаудара"),
+                new ExplosionPreset(33, "✈️ Авиационная ракета"),
+                new ExplosionPreset(49, "🚀 Ракета транспорта"),
+                new ExplosionPreset(51, "🎯 Управляемая ракета"),
+                new ExplosionPreset(81, "💥 Кассетный ракетомет"),
+                new ExplosionPreset(56, "🌊 Торпеда"),
+                new ExplosionPreset(57, "🌊 Подводная торпеда"),
+                new ExplosionPreset(59, "🌊 Подводная ракета")
+            }),
+            new PayloadCategory("🎖️ Снаряды", new ExplosionPreset[] {
+                new ExplosionPreset(6, "🎖️ Танковый снаряд"),
+                new ExplosionPreset(44, "🎖️ Снаряд БТР"),
+                new ExplosionPreset(53, "🎖️ Граната танка"),
+                new ExplosionPreset(39, "🚁 Пушка Valkyrie")
+            }),
+            new PayloadCategory("💣 Гранаты", new ExplosionPreset[] {
+                new ExplosionPreset(1, "💣 Граната"),
+                new ExplosionPreset(2, "💣 Гранатомет"),
+                new ExplosionPreset(86, "💥 Кассетный гранатомет"),
+                new ExplosionPreset(41, "💣 Трубчатая бомба")
+            }),
+            new PayloadCategory("🧨 Мины", new ExplosionPreset[] {
+                new ExplosionPreset(38, "🧨 Мина"),
+                new ExplosionPreset(80, "🧨 Мина-растяжка"),
+                new ExplosionPreset(42, "🧨 Мина транспорта"),
+                new ExplosionPreset(54, "✈️ Авиационная мина"),
+                new ExplosionPreset(61, "⚡ Кинетическая мина"),
+                new ExplosionPreset(63, "🔪 Мина-шипы")
+            }),
+            new PayloadCategory("💥 Липучки", new ExplosionPreset[] {
+                new ExplosionPreset(3, "💣 Липкая бомба")
+            }),
+            new PayloadCategory("🔥 Зажигательные", new ExplosionPreset[] {
+                new ExplosionPreset(4, "🔥 Коктейль Молотова"),
+                new ExplosionPreset(31, "🔥 Направленное пламя")
+            }),
+            new PayloadCategory("🚗 Взрывы транспорта", new ExplosionPreset[] {
+                new ExplosionPreset(8, "🚗 Легковое авто"),
+                new ExplosionPreset(11, "🏍️ Мотоцикл"),
+                new ExplosionPreset(16, "🚢 Лодка"),
+                new ExplosionPreset(18, "🚚 Грузовик"),
+                new ExplosionPreset(9, "✈️ Самолет"),
+                new ExplosionPreset(17, "⛴️ Взрыв корабля"),
+                new ExplosionPreset(79, "⛴️ Малый взрыв корабля"),
+                new ExplosionPreset(30, "🎈 Дирижабль"),
+                new ExplosionPreset(27, "🚂 Поезд")
+            }),
+            new PayloadCategory("⛽ Топливные", new ExplosionPreset[] {
+                new ExplosionPreset(32, "🚛 Цистерна"),
+                new ExplosionPreset(7, "⛽ Высокооктановое топливо"),
+                new ExplosionPreset(10, "⛽ Бензоколонка"),
+                new ExplosionPreset(35, "🔥 Газовый бак"),
+                new ExplosionPreset(29, "🔥 Пропан")
+            }),
+            new PayloadCategory("🎯 Взрывные пули", new ExplosionPreset[] {
+                new ExplosionPreset(19, "💥 Взрывные пули"),
+                new ExplosionPreset(43, "💥 Взрывные патроны"),
+                new ExplosionPreset(72, "💥 Взрывная картечь"),
+                new ExplosionPreset(34, "💥 Пуля транспорта"),
+                new ExplosionPreset(83, "💥 Пуля транспорта 2")
+            }),
+            new PayloadCategory("📦 Разное", new ExplosionPreset[] {
+                new ExplosionPreset(28, "🛢️ Бочка"),
+                new ExplosionPreset(24, "🔥 Газовый баллон"),
+                new ExplosionPreset(36, "🎆 Фейерверк"),
+                new ExplosionPreset(40, "🎯 ПВО"),
+                new ExplosionPreset(55, "🌊 Взрыв подлодки"),
+                new ExplosionPreset(66, "🚁 Скриптовый дрон"),
+                new ExplosionPreset(26, "⚡ Программируемый AR")
+            })
         };
-
-        // Default index → 0 = Grenade (matches the spec's "Type 2 = Grenade"
-        // legacy comment, even though the actual ID for Grenade is 0).
-        public static int ExplosionPresetIndex = 0;
-
-        public static int CurrentExplosionId => ExplosionPresets[ExplosionPresetIndex].Id;
-        public static string CurrentExplosionName => ExplosionPresets[ExplosionPresetIndex].Name;
     }
 }
