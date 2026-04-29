@@ -103,6 +103,19 @@ namespace FpvDroneMod
             Function.Call(Hash.DISABLE_ALL_CONTROL_ACTIONS, 2);
         }
 
+        // Проверка, открыт ли телефон
+        public static bool IsCellPhoneUp()
+        {
+            return Function.Call<bool>(Hash.IS_PED_RUNNING_MOBILE_PHONE_TASK, Game.Player.Character.Handle);
+        }
+
+        // Принудительное закрытие телефона
+        public static void CloseCellPhone()
+        {
+            Function.Call(Hash.TERMINATE_ALL_SCRIPTS_WITH_THIS_NAME, "cellphone_flashhand");
+            Function.Call(Hash.TERMINATE_ALL_SCRIPTS_WITH_THIS_NAME, "cellphone_controller");
+        }
+
         public static float GetDisabledControlNormal(int group, int control)
         {
             return Function.Call<float>(Hash.GET_DISABLED_CONTROL_NORMAL, group, control);

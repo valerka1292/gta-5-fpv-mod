@@ -159,28 +159,32 @@ namespace FpvDroneMod
         // velocity vector* instead of just radially outward.
         public static void Detonate(Vector3 hitPoint, Vector3 approachDir, float speed)
         {
-            // Speed → scale: 1.0 at v_min, DamageScaleMax at TMax.
+            // Берем базовое значение HP из настроек.
+            int idx = Settings.DamageOverrideIndex;
+            if (idx < 0) idx = 0;
+            if (idx >= Settings.DamageValues.Length) idx = Settings.DamageValues.Length - 1;
+            float hpValue = Settings.DamageValues[idx];
+
+            // Конвертируем HP в DamageScale (1000 HP ~= 5.0 scale).
+            float baseScale = hpValue * 0.005f;
+
+            // Добавляем бонус от скорости (до +20%).
             float vNorm = (speed - Config.DamageScaleMinSpeed)
                           / Math.Max(0.01f, Config.TMax - Config.DamageScaleMinSpeed);
-            if (vNorm < 0f) vNorm = 0f;
-            if (vNorm > 1f) vNorm = 1f;
-            float damageScale = 1.0f + (Config.DamageScaleMax - 1.0f) * vNorm;
+            vNorm = Math.Max(0f, Math.Min(1f, vNorm));
+            float finalScale = baseScale * (1.0f + 0.2f * vNorm);
 
             Ped ownerPed = null;
-            try
+            if (Settings.GiveStars)
             {
-                ownerPed = Game.Player?.Character;
-            }
-            catch
-            {
-                ownerPed = null;
+                try { ownerPed = Game.Player?.Character; } catch { ownerPed = null; }
             }
 
             Natives.AddOwnedExplosion(
                 ownerPed,
                 hitPoint,
                 explosionType: Settings.CurrentExplosionId,
-                damageScale: damageScale,
+                damageScale: finalScale,
                 audible: true,
                 invisible: false,
                 cameraShake: 1.0f);
