@@ -20,6 +20,11 @@ namespace FpvDroneMod
             }
         }
 
+        // --- Глобальные настройки ---
+        public static bool GiveStars = true;
+        public static int DamageOverrideIndex = 7; // По умолчанию 1000 HP
+        public static readonly float[] DamageValues = { 0, 50, 100, 200, 400, 600, 800, 1000, 1500, 2000, 3000, 5000 };
+
         public static ExplosionPreset ActivePayload = new ExplosionPreset(0, "GRENADE");
 
         public static int CurrentExplosionId => ActivePayload.Id;
@@ -46,8 +51,7 @@ namespace FpvDroneMod
             new PayloadCategory("MINES / IED", new ExplosionPreset[] {
                 new ExplosionPreset(40, "PROXIMITY MINE"),
                 new ExplosionPreset(44, "VEHICLE MINE"),
-                new ExplosionPreset(71, "BURIED MINE"),
-                new ExplosionPreset(64, "KINETIC MINE")
+                new ExplosionPreset(71, "BURIED MINE")
             }),
             new PayloadCategory("AVIATION PAYLOAD", new ExplosionPreset[] {
                 new ExplosionPreset(50, "BOMB STANDARD"),

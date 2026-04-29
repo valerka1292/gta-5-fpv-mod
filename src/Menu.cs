@@ -26,8 +26,11 @@ namespace FpvDroneMod
             if (_open)
             {
                 _state = MenuState.CategoryView;
-                _currentCategoryIndex = 0;
+                _currentCategoryIndex = -2;
                 _currentPayloadIndex = 0;
+
+                // Если телефон открыт - закрываем его нафиг
+                Natives.CloseCellPhone();
             }
         }
 
@@ -44,8 +47,9 @@ namespace FpvDroneMod
                 case Keys.Up:
                     if (_state == MenuState.CategoryView)
                     {
-                        _currentCategoryIndex = (_currentCategoryIndex - 1 + Settings.Categories.Length)
-                                                % Settings.Categories.Length;
+                        _currentCategoryIndex--;
+                        if (_currentCategoryIndex < -2)
+                            _currentCategoryIndex = Settings.Categories.Length - 1;
                     }
                     else
                     {
@@ -57,7 +61,9 @@ namespace FpvDroneMod
                 case Keys.Down:
                     if (_state == MenuState.CategoryView)
                     {
-                        _currentCategoryIndex = (_currentCategoryIndex + 1) % Settings.Categories.Length;
+                        _currentCategoryIndex++;
+                        if (_currentCategoryIndex >= Settings.Categories.Length)
+                            _currentCategoryIndex = -2;
                     }
                     else
                     {
@@ -69,8 +75,19 @@ namespace FpvDroneMod
                 case Keys.Enter:
                     if (_state == MenuState.CategoryView)
                     {
-                        _state = MenuState.PayloadView;
-                        _currentPayloadIndex = 0;
+                        if (_currentCategoryIndex == -2)
+                        {
+                            Settings.GiveStars = !Settings.GiveStars;
+                        }
+                        else if (_currentCategoryIndex == -1)
+                        {
+                            Settings.DamageOverrideIndex = (Settings.DamageOverrideIndex + 1) % Settings.DamageValues.Length;
+                        }
+                        else
+                        {
+                            _state = MenuState.PayloadView;
+                            _currentPayloadIndex = 0;
+                        }
                     }
                     else
                     {
@@ -79,6 +96,24 @@ namespace FpvDroneMod
                         _state = MenuState.CategoryView;
                     }
                     return true;
+
+                case Keys.Left:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
+                    {
+                        Settings.DamageOverrideIndex--;
+                        if (Settings.DamageOverrideIndex < 0)
+                            Settings.DamageOverrideIndex = Settings.DamageValues.Length - 1;
+                        return true;
+                    }
+                    return false;
+
+                case Keys.Right:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
+                    {
+                        Settings.DamageOverrideIndex = (Settings.DamageOverrideIndex + 1) % Settings.DamageValues.Length;
+                        return true;
+                    }
+                    return false;
 
                 case Keys.Back:
                     if (_state == MenuState.PayloadView)
@@ -109,7 +144,7 @@ namespace FpvDroneMod
             const float padBot = 10f;
 
             int rows = _state == MenuState.CategoryView
-                ? Settings.Categories.Length
+                ? Settings.Categories.Length + 2
                 : Settings.Categories[_currentCategoryIndex].Presets.Length;
 
             float menuH = headerH + rows * rowH + padBot;
@@ -128,9 +163,54 @@ namespace FpvDroneMod
 
             if (_state == MenuState.CategoryView)
             {
+                float starsY = y + headerH + 4f;
+                bool starsSelected = _currentCategoryIndex == -2;
+                Color starsColor = starsSelected ? Color.Black : Color.White;
+
+                if (starsSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, starsY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                new TextElement("WANTED STARS",
+                    new PointF(x + 10f, starsY), 0.38f,
+                    starsColor, Font.ChaletLondon).Draw();
+
+                string starsValue = Settings.GiveStars ? "ENABLED" : "DISABLED";
+                new TextElement($"<  {starsValue}  >",
+                    new PointF(x + 290f, starsY), 0.38f,
+                    starsColor, Font.ChaletLondon).Draw();
+
+                float damageY = starsY + rowH;
+                bool damageSelected = _currentCategoryIndex == -1;
+                Color damageColor = damageSelected ? Color.Black : Color.White;
+
+                if (damageSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, damageY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                int dmgIdx = Settings.DamageOverrideIndex;
+                if (dmgIdx < 0) dmgIdx = 0;
+                if (dmgIdx >= Settings.DamageValues.Length) dmgIdx = Settings.DamageValues.Length - 1;
+                float hpValue = Settings.DamageValues[dmgIdx];
+
+                new TextElement("DAMAGE (HP)",
+                    new PointF(x + 10f, damageY), 0.38f,
+                    damageColor, Font.ChaletLondon).Draw();
+                new TextElement($"<  {hpValue:0}  >",
+                    new PointF(x + 290f, damageY), 0.38f,
+                    damageColor, Font.ChaletLondon).Draw();
+
                 for (int i = 0; i < Settings.Categories.Length; i++)
                 {
-                    float ry = y + headerH + 4f + i * rowH;
+                    float ry = y + headerH + 4f + (i + 2) * rowH;
                     Color textColor = i == _currentCategoryIndex ? Color.Black : Color.White;
 
                     if (i == _currentCategoryIndex)

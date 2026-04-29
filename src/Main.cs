@@ -194,6 +194,8 @@ namespace FpvDroneMod
             // open it absorbs all input via OnKeyDown.
             if (Menu.IsOpen)
             {
+                // Блокируем все игровые действия, чтобы стрелочки не клацали телефон
+                Natives.DisableAllControlsThisFrame();
                 Menu.Draw();
                 if (!_flying) return;
             }
