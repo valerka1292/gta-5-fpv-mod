@@ -147,26 +147,8 @@ namespace FpvDroneMod
             float cy = ScreenH * 0.5f;
 
             DrawOsdLine(new PointF(cx - 28f, cy - 1f), new SizeF(12f, 2f), White);
-            DrawOsdLine(new PointF(cx + 16f, cy - 1f), new SizeF(12f, 2f), White);
 
-            float radius = 7f;
-            int segments = 12;
-            for (int i = 0; i < segments; i++)
-            {
-                float angle1 = i * (float)(Math.PI * 2 / segments);
-                float angle2 = (i + 1) * (float)(Math.PI * 2 / segments);
-
-                float x1 = cx + (float)Math.Cos(angle1) * radius;
-                float y1 = cy + (float)Math.Sin(angle1) * radius;
-                float x2 = cx + (float)Math.Cos(angle2) * radius;
-                float y2 = cy + (float)Math.Sin(angle2) * radius;
-
-                DrawOsdLine(
-                    new PointF(Math.Min(x1, x2), Math.Min(y1, y2)),
-                    new SizeF(Math.Max(1.5f, Math.Abs(x2 - x1)), Math.Max(1.5f, Math.Abs(y2 - y1))),
-                    White
-                );
-            }
+            DrawText("O", new PointF(cx - 5.5f, cy - 10f), 0.38f, White);
         }
 
         private static void DrawStatusBanner(DroneState s)
