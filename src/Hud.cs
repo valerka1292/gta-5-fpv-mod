@@ -98,13 +98,11 @@ namespace FpvDroneMod
 
                 float frac = (speed - baseVal) / SPD_STEP;
                 float y = cy - (i - frac) * ROW_H;
+                if (Math.Abs(y - cy) < 12f) continue;
                 if (y < cy - TAPE_ROWS * ROW_H || y > cy + TAPE_ROWS * ROW_H) continue;
 
                 DrawOsdLine(new PointF(x - 8f, y), new SizeF(8f, 2f), White);
-                if (val % 20 == 0 || i == 0)
-                {
-                    DrawText(val.ToString(), new PointF(x - 34f, y - 10f), 0.30f, White);
-                }
+                DrawText(val.ToString(), new PointF(x - 36f, y - 10f), 0.30f, White);
             }
 
             DrawOsdLine(new PointF(x, cy - TAPE_ROWS * ROW_H), new SizeF(2f, TAPE_ROWS * ROW_H * 2f), White);
@@ -128,13 +126,11 @@ namespace FpvDroneMod
 
                 float frac = (alt - baseVal) / ALT_STEP;
                 float y = cy - (i - frac) * ROW_H;
+                if (Math.Abs(y - cy) < 12f) continue;
                 if (y < cy - TAPE_ROWS * ROW_H || y > cy + TAPE_ROWS * ROW_H) continue;
 
                 DrawOsdLine(new PointF(x, y), new SizeF(8f, 2f), White);
-                if (val % 20 == 0 || i == 0)
-                {
-                    DrawText(val.ToString(), new PointF(x + 12f, y - 10f), 0.30f, White);
-                }
+                DrawText(val.ToString(), new PointF(x + 12f, y - 10f), 0.30f, White);
             }
 
             DrawOsdLine(new PointF(x - 2f, cy - TAPE_ROWS * ROW_H), new SizeF(2f, TAPE_ROWS * ROW_H * 2f), White);
@@ -150,23 +146,9 @@ namespace FpvDroneMod
             float cx = ScreenW * 0.5f;
             float cy = ScreenH * 0.5f;
 
-            // 1. Левая линия (—)
-            // Начинается чуть левее центра и оставляет отступ (gap) до круга
-            DrawOsdLine(new PointF(cx - 24f, cy - 1f), new SizeF(14f, 2f), White);
+            DrawOsdLine(new PointF(cx - 28f, cy - 1f), new SizeF(12f, 2f), White);
 
-            // 2. Идеальный OSD-круг по центру (○)
-            // Генерируем 8 точек по окружности. Это гарантирует 100%
-            // пиксельную центровку на любом разрешении без зависимости от шрифтов.
-            float r = 5.5f; // Радиус кружка
-            for (int i = 0; i < 8; i++)
-            {
-                double a = i * Math.PI / 4.0;
-                float px = cx + (float)Math.Cos(a) * r;
-                float py = cy + (float)Math.Sin(a) * r;
-
-                // Размер точки 2.5x2.5 пикселя дает отличную читаемость
-                DrawOsdLine(new PointF(px - 1.25f, py - 1.25f), new SizeF(2.5f, 2.5f), White);
-            }
+            DrawText("O", new PointF(cx - 5.5f, cy - 10f), 0.38f, White);
         }
 
         private static void DrawStatusBanner(DroneState s)

@@ -20,47 +20,48 @@ namespace FpvDroneMod
             }
         }
 
-        public static ExplosionPreset ActivePayload = new ExplosionPreset(69, "Script Drone");
+        public static ExplosionPreset ActivePayload = new ExplosionPreset(0, "GRENADE");
 
         public static int CurrentExplosionId => ActivePayload.Id;
         public static string CurrentExplosionName => ActivePayload.Name;
 
         public static readonly PayloadCategory[] Categories = new PayloadCategory[]
         {
-            new PayloadCategory("Tactical / Precision", new ExplosionPreset[] {
-                new ExplosionPreset(69, "Script Drone (Kamikaze)"),
-                new ExplosionPreset(72, "Script Missile"),
-                new ExplosionPreset(2, "Sticky Bomb"),
-                new ExplosionPreset(40, "Proximity Mine"),
-                new ExplosionPreset(43, "Pipe Bomb")
+            new PayloadCategory("ANTIPERSONNEL / LIGHT", new ExplosionPreset[] {
+                new ExplosionPreset(0, "GRENADE"),
+                new ExplosionPreset(1, "GRENADE LAUNCHER"),
+                new ExplosionPreset(2, "STICKY BOMB"),
+                new ExplosionPreset(43, "PIPEBOMB"),
+                new ExplosionPreset(3, "MOLOTOV"),
+                new ExplosionPreset(83, "EMP LAUNCHER")
             }),
-            new PayloadCategory("Heavy / Artillery", new ExplosionPreset[] {
-                new ExplosionPreset(5, "Tank Shell"),
-                new ExplosionPreset(4, "RPG Rocket"),
-                new ExplosionPreset(59, "Orbital Cannon"),
-                new ExplosionPreset(36, "Railgun"),
-                new ExplosionPreset(46, "APC Shell")
+            new PayloadCategory("ANTI-TANK / HEAVY", new ExplosionPreset[] {
+                new ExplosionPreset(4, "RPG ROCKET"),
+                new ExplosionPreset(5, "TANK SHELL"),
+                new ExplosionPreset(46, "APC SHELL"),
+                new ExplosionPreset(36, "RAILGUN"),
+                new ExplosionPreset(69, "SCRIPT DRONE (KAMIKAZE)"),
+                new ExplosionPreset(72, "SCRIPT MISSILE")
             }),
-            new PayloadCategory("Aviation Bombs", new ExplosionPreset[] {
-                new ExplosionPreset(50, "Standard Bomb"),
-                new ExplosionPreset(60, "Wide Standard Bomb"),
-                new ExplosionPreset(47, "Cluster Bomb"),
-                new ExplosionPreset(49, "Incendiary Bomb"),
-                new ExplosionPreset(48, "Gas Bomb")
+            new PayloadCategory("MINES / IED", new ExplosionPreset[] {
+                new ExplosionPreset(40, "PROXIMITY MINE"),
+                new ExplosionPreset(44, "VEHICLE MINE"),
+                new ExplosionPreset(71, "BURIED MINE"),
+                new ExplosionPreset(64, "KINETIC MINE")
             }),
-            new PayloadCategory("Vehicle Weapons", new ExplosionPreset[] {
-                new ExplosionPreset(41, "Valkyrie Cannon"),
-                new ExplosionPreset(56, "Hunter Cannon"),
-                new ExplosionPreset(57, "Rogue Cannon"),
-                new ExplosionPreset(62, "Oppressor MK2 Cannon"),
-                new ExplosionPreset(73, "RC Tank Rocket")
+            new PayloadCategory("AVIATION PAYLOAD", new ExplosionPreset[] {
+                new ExplosionPreset(50, "BOMB STANDARD"),
+                new ExplosionPreset(60, "BOMB WIDE"),
+                new ExplosionPreset(47, "BOMB CLUSTER"),
+                new ExplosionPreset(49, "BOMB INCENDIARY"),
+                new ExplosionPreset(51, "TORPEDO")
             }),
-            new PayloadCategory("Non-Lethal / Special", new ExplosionPreset[] {
-                new ExplosionPreset(78, "Flash Grenade"),
-                new ExplosionPreset(79, "Stun Grenade"),
-                new ExplosionPreset(20, "Smoke Grenade"),
-                new ExplosionPreset(83, "EMP Launcher"),
-                new ExplosionPreset(38, "Firework")
+            new PayloadCategory("FUEL / GAS", new ExplosionPreset[] {
+                new ExplosionPreset(6, "HI-OCTANE FUEL"),
+                new ExplosionPreset(9, "PETROL PUMP"),
+                new ExplosionPreset(28, "PROPANE TANK"),
+                new ExplosionPreset(27, "EXPLOSIVE BARREL"),
+                new ExplosionPreset(34, "GAS TANK")
             })
         };
     }
