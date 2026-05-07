@@ -79,8 +79,8 @@ namespace FpvDroneMod
                         {
                             int impulseIdx = Settings.ImpulseScaleIndex;
                             if (impulseIdx < 0) impulseIdx = 0;
-                            if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
-                            Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulseMultipliers.Length;
+                            if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
+                            Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulsePresets.Length;
                         }
                         else if (_currentCategoryIndex == -2)
                         {
@@ -109,9 +109,9 @@ namespace FpvDroneMod
                     {
                         int impulseIdx = Settings.ImpulseScaleIndex;
                         if (impulseIdx < 0) impulseIdx = 0;
-                        if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                        if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
                         impulseIdx--;
-                        if (impulseIdx < 0) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                        if (impulseIdx < 0) impulseIdx = Settings.ImpulsePresets.Length - 1;
                         Settings.ImpulseScaleIndex = impulseIdx;
                         return true;
                     }
@@ -129,8 +129,8 @@ namespace FpvDroneMod
                     {
                         int impulseIdx = Settings.ImpulseScaleIndex;
                         if (impulseIdx < 0) impulseIdx = 0;
-                        if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
-                        Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulseMultipliers.Length;
+                        if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
+                        Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulsePresets.Length;
                         return true;
                     }
                     if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
@@ -202,13 +202,13 @@ namespace FpvDroneMod
 
                 int impulseIdx = Settings.ImpulseScaleIndex;
                 if (impulseIdx < 0) impulseIdx = 0;
-                if (impulseIdx >= Settings.ImpulseLabels.Length) impulseIdx = Settings.ImpulseLabels.Length - 1;
+                if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
 
                 new TextElement("FORCE (IMPULSE)",
                     new PointF(x + 10f, forceY), 0.38f,
                     forceColor, Font.ChaletLondon).Draw();
 
-                new TextElement($"<  {Settings.ImpulseLabels[impulseIdx]}  >",
+                new TextElement($"<  {Settings.ImpulsePresets[impulseIdx].Label}  >",
                     new PointF(x + 290f, forceY), 0.38f,
                     forceColor, Font.ChaletLondon).Draw();
 

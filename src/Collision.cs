@@ -147,32 +147,30 @@ namespace FpvDroneMod
             return (Outcome.ImpactNow, bestHit, bestNormal, bestEntity, speed);
         }
 
-        // Spec 9.2 — explosion at hit point + Battlefield-style impulse on
-        // nearby vehicles, both scaled by impact speed. The chosen explosion
-        // *preset* is preserved (whatever the menu selected); we only multiply
-        // its built-in damage by a speed-derived factor.
+        // Spec 9.2 — explosion at hit point + preset-driven physical impulse
+        // on nearby vehicles. HP damage is calculated independently from the
+        // FORCE / IMPULSE preset; the preset controls shock radius, force,
+        // camera shake, audibility, and visibility.
         //
-        // approachDir is the unit vector along which the drone hit the
-        // surface (prevP → hit). For the primary target (vehicle very close
-        // to hit_point) we blend approachDir into the impulse direction so
-        // a head-on ram actually shoves the truck *along the kamikaze's
-        // velocity vector* instead of just radially outward.
+        // approachDir is retained for call-site compatibility; the shockwave
+        // force is now computed radially as entity.Position - hitPoint.
         public static void Detonate(Vector3 hitPoint, Vector3 approachDir, float speed)
         {
-            // Берем базовое значение HP из настроек.
+            // HP damage is intentionally independent from the impulse preset.
             int idx = Settings.DamageOverrideIndex;
             if (idx < 0) idx = 0;
             if (idx >= Settings.DamageValues.Length) idx = Settings.DamageValues.Length - 1;
             float hpValue = Settings.DamageValues[idx];
 
-            // Конвертируем HP в DamageScale (1000 HP ~= 5.0 scale).
+            // Convert the selected HP value into GTA's damageScale
+            // (1000 HP ~= 5.0 scale), then add only the existing speed bonus.
             float baseScale = hpValue * 0.005f;
-
-            // Добавляем бонус от скорости (до +20%).
             float vNorm = (speed - Config.DamageScaleMinSpeed)
                           / Math.Max(0.01f, Config.TMax - Config.DamageScaleMinSpeed);
             vNorm = Math.Max(0f, Math.Min(1f, vNorm));
-            float finalScale = baseScale * (1.0f + 0.2f * vNorm);
+            float damageScale = baseScale * (1.0f + 0.2f * vNorm);
+
+            Settings.ImpulsePreset impulsePreset = Settings.CurrentImpulsePreset;
 
             Ped ownerPed = null;
             if (Settings.GiveStars)
@@ -184,71 +182,47 @@ namespace FpvDroneMod
                 ownerPed,
                 hitPoint,
                 explosionType: Settings.CurrentExplosionId,
-                damageScale: finalScale,
-                audible: true,
-                invisible: false,
-                cameraShake: 1.0f);
+                damageScale: damageScale,
+                audible: impulsePreset.Audible,
+                invisible: impulsePreset.Invisible,
+                cameraShake: impulsePreset.CameraShake);
 
-            // Apply a directional impulse to every vehicle within
-            // VehicleImpulseRadius of the hit. Force magnitude scales with
-            // impact speed and falls off linearly with distance from hit.
-            // Direction = world-down inversion: push along the sweep
-            // direction (we approximate by hit_point − vehicle_centre, which
-            // points outward like a real explosion shockwave).
+            // Apply the impulse preset as a separate physical shockwave layer.
+            // Direction is purely radial from the actual hit point to each
+            // entity. If the hit point is above an entity and the raw radial
+            // vector points down into the ground, flip Z so vehicles are lifted
+            // instead of being pinned downward.
+            if (impulsePreset.ForceScale <= 0f || impulsePreset.Radius <= 0f)
+                return;
+
             try
             {
-                Vehicle[] nearby = World.GetNearbyVehicles(hitPoint, Config.VehicleImpulseRadius);
+                Vehicle[] nearby = World.GetNearbyVehicles(hitPoint, impulsePreset.Radius);
                 if (nearby != null)
                 {
                     foreach (var v in nearby)
                     {
                         if (v == null || !v.Exists()) continue;
 
-                        Vector3 from = hitPoint;
-                        Vector3 to   = v.Position;
-                        Vector3 push = to - from;
-                        float dist = push.Length();
-                        if (dist < 0.01f) continue;
+                        Vector3 radial = v.Position - hitPoint;
+                        float dist = radial.Length();
+                        if (dist < 0.01f || dist > impulsePreset.Radius) continue;
 
-                        float falloff = 1.0f - (dist / Config.VehicleImpulseRadius);
-                        if (falloff < 0f) continue;
+                        if (radial.Z < 0f)
+                            radial.Z = -radial.Z;
 
-                        Vector3 radialDir = push / dist;
+                        if (radial.LengthSquared() <= 0.000001f) continue;
 
-                        // Blend approachDir (the drone's velocity direction
-                        // at impact) with the radial outward direction. The
-                        // closer the vehicle is to the hit_point — i.e. the
-                        // closer it is to *being the target we rammed* — the
-                        // more we weight approachDir. Vehicles further out
-                        // get a near-pure radial shockwave.
-                        float approachWeight = falloff; // 1.0 at hit, 0 at radius
-                        Vector3 blendedDir = radialDir * (1.0f - approachWeight)
-                                           + approachDir * approachWeight;
-                        if (blendedDir.LengthSquared() > 0.000001f)
-                            blendedDir = Vector3.Normalize(blendedDir);
-
-                        if (blendedDir.LengthSquared() > 0.000001f)
-                            blendedDir = Vector3.Normalize(blendedDir);
-
-                        int impulseIdx = Settings.ImpulseScaleIndex;
-                        if (impulseIdx < 0) impulseIdx = 0;
-                        if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
-                        float impulseMultiplier = Settings.ImpulseMultipliers[impulseIdx];
-
-                        Vector3 force = blendedDir
+                        Vector3 radialDir = Vector3.Normalize(radial);
+                        Vector3 force = radialDir
                                         * Config.VehicleImpulsePerSpeed
-                                        * speed
-                                        * falloff
-                                        * impulseMultiplier;
+                                        * impulsePreset.ForceScale
+                                        * speed;
 
-                        // Apply force at the actual hit point (in world
-                        // space, then converted to entity-local via
-                        // GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS) so the
-                        // engine generates real torque — a side hit makes
-                        // the truck flip on its long axis, a top hit slams
-                        // the roof down, etc. Without this, force at
-                        // entity.Position is pure translation and trucks
-                        // just glide instead of rolling.
+                        // Apply force at the actual hit point converted to the
+                        // entity's local coordinates. This off-centre impulse
+                        // creates torque, causing flips and rolls instead of
+                        // simple linear sliding.
                         Vector3 localOffset = Natives.GetOffsetFromEntityGivenWorldCoords(v, hitPoint);
                         Natives.ApplyForceToEntity(v, force, localOffset, forceType: 1);
                     }
@@ -278,12 +252,12 @@ namespace FpvDroneMod
                 float closingSpeed = -Vector3.Dot(relVel, hitNormal);
                 if (closingSpeed <= 0.05f) return;
 
-                int impulseIdx = Settings.ImpulseScaleIndex;
-                if (impulseIdx < 0) impulseIdx = 0;
-                if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
-                float impulseMultiplier = Settings.ImpulseMultipliers[impulseIdx];
+                Settings.ImpulsePreset impulsePreset = Settings.CurrentImpulsePreset;
 
-                float j = Config.DroneMassKg * closingSpeed * Config.ImpactImpulseScale * impulseMultiplier;
+                float j = Config.DroneMassKg
+                          * closingSpeed
+                          * Config.ImpactImpulseScale
+                          * impulsePreset.ForceScale;
                 if (j <= 0.01f) return;
 
                 Vector3 impulse = relVel.LengthSquared() > 0.001f
