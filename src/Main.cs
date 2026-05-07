@@ -67,6 +67,8 @@ namespace FpvDroneMod
             _state = new DroneState();
             PlayerGuard.OnEnter(player, ped, _state);
             InputDistortion.Reset();
+            Natives.SetSeethrough(false);
+            Natives.SetNightvision(false);
 
 #pragma warning disable CS0618 // World.CreateCamera + RenderingCamera deprecated in v3.7 nightly but still functional
             // Spawn camera looking the same way the player was — so the first
@@ -101,6 +103,13 @@ namespace FpvDroneMod
 
             try { Effects.StopAll(); }
             catch (Exception ex) { Log.Error("EndFlight: Effects.StopAll failed", ex); }
+
+            try
+            {
+                Natives.SetSeethrough(false);
+                Natives.SetNightvision(false);
+            }
+            catch (Exception ex) { Log.Error("EndFlight: Resetting vision modes failed", ex); }
 
             try
             {
@@ -154,6 +163,29 @@ namespace FpvDroneMod
             }
 
             if (!_flying) return;
+
+            if (e.KeyCode == Keys.J)
+            {
+                // Cycle through visual modes: Normal -> Thermal -> Night Vision -> Normal.
+                _state.Vision = (VisionMode)(((int)_state.Vision + 1) % 3);
+
+                if (_state.Vision == VisionMode.Normal)
+                {
+                    Natives.SetSeethrough(false);
+                    Natives.SetNightvision(false);
+                }
+                else if (_state.Vision == VisionMode.Thermal)
+                {
+                    Natives.SetNightvision(false);
+                    Natives.SetSeethrough(true);
+                }
+                else if (_state.Vision == VisionMode.NightVision)
+                {
+                    Natives.SetSeethrough(false);
+                    Natives.SetNightvision(true);
+                }
+                return;
+            }
 
             switch (e.KeyCode)
             {

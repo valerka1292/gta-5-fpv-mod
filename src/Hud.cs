@@ -13,6 +13,7 @@ namespace FpvDroneMod
 
         private static readonly Color White  = Color.FromArgb(255, 245, 245, 245);
         private static readonly Color Red    = Color.FromArgb(255, 230, 60, 60);
+        private static readonly Color Green  = Color.FromArgb(255, 60, 230, 80);
         private static readonly Color Dim    = Color.FromArgb(255, 180, 180, 180);
 
         private const float ROW_H = 18f;
@@ -52,6 +53,15 @@ namespace FpvDroneMod
             int rssi = (int)Math.Round(Math.Max(0f, Math.Min(1f, s.Q)) * 100f);
             Color rssiColor = rssi < 30 ? Red : White;
             DrawText($"RSSI {rssi}%", new PointF(ScreenW - 100f, 60f), 0.32f, rssiColor);
+
+            if (s.Vision == VisionMode.Thermal)
+            {
+                DrawText("THERM", new PointF(ScreenW - 100f, 42f), 0.32f, White);
+            }
+            else if (s.Vision == VisionMode.NightVision)
+            {
+                DrawText("NVG", new PointF(ScreenW - 100f, 42f), 0.32f, Green);
+            }
         }
 
         private static void DrawCompassTape(DroneState s)
