@@ -26,9 +26,43 @@ namespace FpvDroneMod
         public static readonly float[] DamageValues = { 0, 50, 100, 200, 400, 600, 800, 1000, 1500, 2000, 3000, 5000 };
 
         // --- Настройка силы физического импульса ---
-        public static int ImpulseScaleIndex = 2; // По умолчанию 1.0x (Normal)
-        public static readonly float[] ImpulseMultipliers = { 0.0f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 25.0f, 50.0f };
-        public static readonly string[] ImpulseLabels = { "OFF", "WEAK", "NORMAL", "STRONG", "POWERFUL", "BATTLEFIELD", "SUPER", "EXTREME" };
+        public struct ImpulsePreset
+        {
+            public string Label;
+            public float ForceScale;     // Множитель базовой силы
+            public float Radius;         // Радиус в метрах
+            public float CameraShake;    // Интенсивность тряски (0.0 - 10.0+)
+            public bool Invisible;       // Скрыть стандартный визуальный эффект (для малых пресетов)
+            public bool Audible;         // Слышимость взрыва
+        }
+
+        public static int ImpulseScaleIndex = 2; // По умолчанию MEDIUM (NORMAL)
+        public static readonly ImpulsePreset[] ImpulsePresets = {
+            new ImpulsePreset { Label = "OFF",          ForceScale = 0f,     Radius = 0f,   CameraShake = 0f,    Invisible = true,  Audible = false },
+            new ImpulsePreset { Label = "WEAK",         ForceScale = 0.2f,   Radius = 3f,   CameraShake = 0.2f,  Invisible = true,  Audible = true  },
+            new ImpulsePreset { Label = "LIGHT",        ForceScale = 0.5f,   Radius = 5f,   CameraShake = 0.5f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "MEDIUM",       ForceScale = 1.0f,   Radius = 8f,   CameraShake = 1.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "HEAVY",        ForceScale = 2.5f,   Radius = 12f,  CameraShake = 1.5f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "STRONG",       ForceScale = 5.0f,   Radius = 20f,  CameraShake = 2.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "TACTICAL",     ForceScale = 12.0f,  Radius = 35f,  CameraShake = 3.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "BATTLEFIELD",  ForceScale = 25.0f,  Radius = 60f,  CameraShake = 4.5f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "DEVASTATING",  ForceScale = 50.0f,  Radius = 100f, CameraShake = 6.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "EXTREME",      ForceScale = 100.0f, Radius = 150f, CameraShake = 8.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "CATASTROPHIC", ForceScale = 250.0f, Radius = 250f, CameraShake = 15.0f, Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "APOCALYPTIC",  ForceScale = 600.0f, Radius = 450f, CameraShake = 30.0f, Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "NUCLEAR",      ForceScale = 1500.0f, Radius = 800f, CameraShake = 100.0f, Invisible = false, Audible = true  }
+        };
+
+        public static ImpulsePreset CurrentImpulsePreset
+        {
+            get
+            {
+                int idx = ImpulseScaleIndex;
+                if (idx < 0) idx = 0;
+                if (idx >= ImpulsePresets.Length) idx = ImpulsePresets.Length - 1;
+                return ImpulsePresets[idx];
+            }
+        }
 
         public static ExplosionPreset ActivePayload = new ExplosionPreset(0, "GRENADE");
 
@@ -50,8 +84,8 @@ namespace FpvDroneMod
                 new ExplosionPreset(5, "TANK SHELL"),
                 new ExplosionPreset(46, "APC SHELL"),
                 new ExplosionPreset(36, "RAILGUN"),
-                new ExplosionPreset(69, "SCRIPT DRONE (KAMIKAZE)"),
-                new ExplosionPreset(72, "SCRIPT MISSILE")
+                new ExplosionPreset(69, "SCRIPT_DRONE (KAMIKAZE)"),
+                new ExplosionPreset(72, "SCRIPT_MISSILE")
             }),
             new PayloadCategory("MINES / IED", new ExplosionPreset[] {
                 new ExplosionPreset(40, "PROXIMITY MINE"),
