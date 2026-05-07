@@ -230,10 +230,16 @@ namespace FpvDroneMod
                         if (blendedDir.LengthSquared() > 0.000001f)
                             blendedDir = Vector3.Normalize(blendedDir);
 
+                        int impulseIdx = Settings.ImpulseScaleIndex;
+                        if (impulseIdx < 0) impulseIdx = 0;
+                        if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                        float impulseMultiplier = Settings.ImpulseMultipliers[impulseIdx];
+
                         Vector3 force = blendedDir
                                         * Config.VehicleImpulsePerSpeed
                                         * speed
-                                        * falloff;
+                                        * falloff
+                                        * impulseMultiplier;
 
                         // Apply force at the actual hit point (in world
                         // space, then converted to entity-local via
@@ -272,7 +278,12 @@ namespace FpvDroneMod
                 float closingSpeed = -Vector3.Dot(relVel, hitNormal);
                 if (closingSpeed <= 0.05f) return;
 
-                float j = Config.DroneMassKg * closingSpeed * Config.ImpactImpulseScale;
+                int impulseIdx = Settings.ImpulseScaleIndex;
+                if (impulseIdx < 0) impulseIdx = 0;
+                if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                float impulseMultiplier = Settings.ImpulseMultipliers[impulseIdx];
+
+                float j = Config.DroneMassKg * closingSpeed * Config.ImpactImpulseScale * impulseMultiplier;
                 if (j <= 0.01f) return;
 
                 Vector3 impulse = relVel.LengthSquared() > 0.001f
