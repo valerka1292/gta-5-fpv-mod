@@ -353,7 +353,7 @@ namespace FpvDroneMod
             // 13.20-23 Angular update + roll + forward vector.
             if (_state.AutopilotMode != AutoPilotState.Off)
             {
-                Autopilot.Update(_state, dtReal);
+                Autopilot.Update(_state, ped, dtReal);
                 Physics.UpdateCameraRoll(_state, 0f, dtGame);
             }
             else
@@ -504,12 +504,16 @@ namespace FpvDroneMod
             try
             {
                 Vector3 start = _state.P;
-                Vector3 end = start + (_state.F * 500f);
+                Vector3 end = start + (_state.F * 1000f);
 
+                // ВАЖНО: IntersectFlags.Everything — луч бьётся о стены первым.
+                // Если первое попадание не Vehicle/Ped — цель за укрытием, лок невозможен.
+                // Предыдущий вариант (Vehicles|Peds) проходил сквозь стены и
+                // захватывал цель через здание.
                 var ray = World.Raycast(
                     start,
                     end,
-                    IntersectFlags.Vehicles | IntersectFlags.Peds,
+                    IntersectFlags.Everything,
                     playerPed
                 );
 
@@ -521,6 +525,8 @@ namespace FpvDroneMod
                 if (ent == null || !ent.Exists())
                     return null;
 
+                // Первое попадание должно быть транспортным средством или пешеходом.
+                // Если луч сначала ударился о стену/столб — возвращаем null.
                 if (!(ent is Vehicle) && !(ent is Ped))
                     return null;
 

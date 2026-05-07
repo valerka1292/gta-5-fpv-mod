@@ -1,0 +1,3930 @@
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\AudioManager.cs
+using System;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
+using ManagedBass;
+using ManagedBass.Fx;
+
+namespace FpvDroneMod
+{
+    internal static class AudioManager
+    {
+        // Все значения в центах (100 центов = 1 полутон, 1200 центов = 1 октава).
+        // Оба MP3 записаны на частоте ~297 Hz.
+        // -830 центов от базы = ~170 Hz = холостые обороты дрона на земле.
+        // +1070 центов от базы = максимальные обороты на скорости TMax.
+        // При старте мотор "раскручивается" — начинаем с -1050 центов.
+
+        private const float PITCH_IDLE_CENTS  = -830f;   // питч при speed=0
+        private const float PITCH_MAX_CENTS   = +1070f;  // питч при speed=TMax
+        private const float PITCH_START_CENTS = -1050f;  // питч в момент включения
+        private const float PITCH_RANGE       = PITCH_MAX_CENTS - PITCH_IDLE_CENTS; // = 1900f
+
+        // drone_start.mp3 = 4.206 сек
+        private const float START_TOTAL       = 4.206f;
+        private const float START_XFADE_BEGIN = 3.206f;  // начало кроссфейда (за 1 сек до конца)
+        private const float START_XFADE_DUR   = 1.0f;    // длительность кроссфейда start→fly
+
+        // drone_fly.mp3 = 94.198 сек
+        private const float FLY_TOTAL         = 94.198f;
+        private const float FLY_XFADE_BEGIN   = 92.198f; // начало кроссфейда (за 2 сек до конца)
+        private const float FLY_XFADE_DUR     = 2.0f;    // длительность кроссфейда fly→fly_new
+
+        // Раскрутка звука при старте
+        private const float SPOOL_FADE_DUR    = 0.45f;   // за сколько секунд громкость 0→1 при старте
+
+        // Затухание при краше / остановке
+        private const float CRASH_FADE_MS     = 300f;    // мс
+        private const float STOP_FADE_MS      = 500f;    // мс
+        private const float CRASH_FREE_DELAY  = 0.35f;   // сек до вызова FreeStream после краша
+        private const float STOP_FREE_DELAY   = 0.55f;   // сек до вызова FreeStream после стопа
+
+        private struct AudioStream
+        {
+            public int    DecoderHandle; // BASS_STREAM_DECODE хэндл
+            public int    FxHandle;      // BassFx.TempoCreate хэндл
+            public float  BaseFreq;      // нативная частота файла (Гц)
+            public bool   Active;
+            public GCHandle PinnedData;  // удерживает byte[] от GC пока BASS читает память
+        }
+
+        private static bool   _initialized        = false;
+
+        // Три слота: стартовый звук + два слота для кроссфейда fly→fly
+        private static AudioStream _start;   // drone_start.mp3
+        private static AudioStream _flyA;    // текущий drone_fly.mp3
+        private static AudioStream _flyB;    // входящий при кроссфейде
+
+        // Таймеры (реальное время, сек)
+        private static float  _startElapsed       = 0f;
+        private static float  _flyElapsed         = 0f;
+
+        // Флаги состояния
+        private static bool   _startPlaying       = false;
+        private static bool   _startXfadeDone     = false; // start→fly переход выполнен
+        private static bool   _flyXfadeScheduled  = false; // fly→fly переход запланирован
+
+        // Громкости (0..1)
+        private static float  _volStart           = 0f;
+        private static float  _volFlyA            = 0f;
+        private static float  _volFlyB            = 0f;
+
+        // Затухание при краше/стопе
+        private static bool   _fading             = false;
+        private static float  _fadeElapsed        = 0f;
+        private static float  _fadeDelay          = 0f;   // сколько ждать до FreeStream
+
+        // Реальное время
+        private static readonly Stopwatch _clock  = new Stopwatch();
+        private static double _lastClockSec       = 0.0;
+
+        // Win32 API для явной загрузки нативных DLL
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadLibrary(string lpFileName);
+
+        public static void Init()
+        {
+            try
+            {
+                ExtractAndLoadNative();
+                if (!Bass.Init(-1, 44100, DeviceInitFlags.Default))
+                {
+                    Log.Error("AudioManager: Bass.Init failed: " + Bass.LastError);
+                    return;
+                }
+                Bass.Configure(Configuration.UpdatePeriod, 5);
+                Bass.Configure(Configuration.UpdateThreads, 1);
+                _clock.Start();
+                _lastClockSec = 0.0;
+                _initialized  = true;
+                Log.Info("AudioManager: initialized OK");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AudioManager: Init exception", ex);
+            }
+        }
+
+        public static void OnLaunch()
+        {
+            if (!_initialized) return;
+            try
+            {
+                // Сброс всего
+                FreeAll();
+                _startElapsed      = 0f;
+                _flyElapsed        = 0f;
+                _startPlaying      = false;
+                _startXfadeDone    = false;
+                _flyXfadeScheduled = false;
+                _volStart          = 0f;
+                _volFlyA           = 0f;
+                _volFlyB           = 0f;
+                _fading            = false;
+                _fadeElapsed       = 0f;
+                _lastClockSec      = _clock.Elapsed.TotalSeconds;
+
+                // Загрузить drone_start.mp3
+                _start = CreateStreamFromEmbedded("drone_start.mp3");
+                if (!_start.Active)
+                {
+                    Log.Error("AudioManager: failed to load drone_start.mp3");
+                    return;
+                }
+
+                // Начальный питч = PITCH_START_CENTS (мотор ещё не раскрутился)
+                SetPitchCents(ref _start, PITCH_START_CENTS);
+
+                // Начальная громкость = 0 (нарастает во время раскрутки)
+                Bass.ChannelSetAttribute(_start.FxHandle, ChannelAttribute.Volume, 0f);
+
+                // Запустить
+                Bass.ChannelPlay(_start.FxHandle, false);
+                _startPlaying = true;
+
+                Log.Info("AudioManager: OnLaunch OK, drone_start playing");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AudioManager: OnLaunch exception", ex);
+            }
+        }
+
+        public static void Update(DroneState s)
+        {
+            if (!_initialized || (!_startPlaying && !_flyA.Active)) return;
+            try
+            {
+                // ── 1. Реальное dt ──────────────────────────────────────────────
+                double nowSec = _clock.Elapsed.TotalSeconds;
+                float dt      = (float)(nowSec - _lastClockSec);
+                _lastClockSec = nowSec;
+                if (dt < 0f) dt = 0f;
+                if (dt > 0.05f) dt = 0.05f;  // clamp против спайков
+
+                // ── 2. Обработка затухания при краше/стопе ──────────────────────
+                if (_fading)
+                {
+                    _fadeElapsed += dt;
+                    if (_fadeElapsed >= _fadeDelay)
+                    {
+                        FreeAll();
+                        _fading = false;
+                    }
+                    // Во время затухания питч не обновляем — звук уже тухнет
+                    return;
+                }
+
+                // ── 3. Инкремент таймеров ────────────────────────────────────────
+                if (_startPlaying) _startElapsed += dt;
+                if (_flyA.Active) _flyElapsed += dt;
+
+                // ── 4. Питч-движок ───────────────────────────────────────────────
+                // Вычислить целевой питч на основе текущей скорости.
+                // Квадратичная кривая: основной прирост питча после 60% скорости —
+                // создаёт эффект "форсажа" при разгоне.
+                float speed = s.V.Length();
+                float speedRatio = Clamp01(speed / Settings.CurrentProfile.TMax);
+                float curve = speedRatio * speedRatio;
+                float targetCents = PITCH_IDLE_CENTS + curve * PITCH_RANGE;
+
+                // Во время раскрутки дрона (spool) интерполируем питч стартового
+                // стрима от PITCH_START_CENTS до targetCents.
+                // s.SpoolElapsed и s.Spooling выставляются в Main.OnTick.
+                if (s.Spooling && _start.Active)
+                {
+                    float spoolT = Clamp01(s.SpoolElapsed / SPOOL_FADE_DUR);
+                    float spoolPitch = PITCH_START_CENTS + spoolT * (targetCents - PITCH_START_CENTS);
+
+                    // Громкость нарастает 0→1 за SPOOL_FADE_DUR секунд
+                    _volStart = spoolT;
+                    Bass.ChannelSetAttribute(_start.FxHandle, ChannelAttribute.Volume, _volStart);
+
+                    // Питч стартового стрима — по кривой раскрутки
+                    SetPitchCents(ref _start, spoolPitch);
+                }
+                else
+                {
+                    // После раскрутки — нормальный режим: питч по текущей скорости
+                    if (_start.Active) SetPitchCents(ref _start, targetCents);
+                }
+
+                // Fly-стримы всегда получают питч по скорости
+                if (_flyA.Active) SetPitchCents(ref _flyA, targetCents);
+                if (_flyB.Active) SetPitchCents(ref _flyB, targetCents);
+
+                // ── 5. Кроссфейд drone_start → drone_fly ────────────────────────
+                if (_startPlaying && !_startXfadeDone)
+                {
+                    // Шаг 5а: загрузить _flyA в момент начала кроссфейда
+                    if (_startElapsed >= START_XFADE_BEGIN && !_flyA.Active)
+                    {
+                        _flyA = CreateStreamFromEmbedded("drone_fly.mp3");
+                        if (!_flyA.Active)
+                        {
+                            Log.Error("AudioManager: failed to load drone_fly.mp3 for crossfade");
+                        }
+                        else
+                        {
+                            SetPitchCents(ref _flyA, targetCents);
+                            Bass.ChannelSetAttribute(_flyA.FxHandle, ChannelAttribute.Volume, 0f);
+                            Bass.ChannelPlay(_flyA.FxHandle, false);
+                            _flyElapsed = 0f;
+                            _volFlyA = 0f;
+                        }
+                    }
+
+                    // Шаг 5б: анимировать кроссфейд
+                    if (_startElapsed >= START_XFADE_BEGIN && _flyA.Active)
+                    {
+                        float xT = Clamp01((_startElapsed - START_XFADE_BEGIN) / START_XFADE_DUR);
+
+                        // drone_start тухнет 1→0
+                        _volStart = 1f - xT;
+                        Bass.ChannelSetAttribute(_start.FxHandle, ChannelAttribute.Volume, _volStart);
+
+                        // drone_fly нарастает 0→1
+                        _volFlyA = xT;
+                        Bass.ChannelSetAttribute(_flyA.FxHandle, ChannelAttribute.Volume, _volFlyA);
+
+                        // Кроссфейд завершён
+                        if (xT >= 1f)
+                        {
+                            FreeStream(ref _start);
+                            _startPlaying = false;
+                            _startXfadeDone = true;
+                            _volFlyA = 1f;
+                            Bass.ChannelSetAttribute(_flyA.FxHandle, ChannelAttribute.Volume, 1f);
+                            Log.Info("AudioManager: start→fly crossfade complete");
+                        }
+                    }
+                }
+
+                // ── 6. Зацикливание drone_fly → новый drone_fly ──────────────────
+                if (_flyA.Active && !_flyXfadeScheduled && _flyElapsed >= FLY_XFADE_BEGIN)
+                {
+                    _flyXfadeScheduled = true;
+
+                    // Загрузить новую копию drone_fly
+                    _flyB = CreateStreamFromEmbedded("drone_fly.mp3");
+                    if (!_flyB.Active)
+                    {
+                        Log.Error("AudioManager: failed to load drone_fly.mp3 for loop crossfade");
+                        _flyXfadeScheduled = false;
+                    }
+                    else
+                    {
+                        SetPitchCents(ref _flyB, targetCents);
+                        Bass.ChannelSetAttribute(_flyB.FxHandle, ChannelAttribute.Volume, 0f);
+                        Bass.ChannelPlay(_flyB.FxHandle, false);
+                        _volFlyB = 0f;
+                        Log.Info("AudioManager: fly loop crossfade started");
+                    }
+                }
+
+                // Анимировать кроссфейд fly→fly
+                if (_flyXfadeScheduled && _flyA.Active && _flyB.Active)
+                {
+                    float xT = Clamp01((_flyElapsed - FLY_XFADE_BEGIN) / FLY_XFADE_DUR);
+
+                    _volFlyA = 1f - xT;
+                    Bass.ChannelSetAttribute(_flyA.FxHandle, ChannelAttribute.Volume, _volFlyA);
+
+                    _volFlyB = xT;
+                    Bass.ChannelSetAttribute(_flyB.FxHandle, ChannelAttribute.Volume, _volFlyB);
+
+                    if (xT >= 1f)
+                    {
+                        // Старый flyA → в мусор, flyB становится flyA
+                        FreeStream(ref _flyA);
+                        _flyA = _flyB;
+                        _flyB = default;
+                        _volFlyA = 1f;
+                        _volFlyB = 0f;
+                        _flyElapsed = 0f;       // сброс таймера для следующего цикла
+                        _flyXfadeScheduled = false;
+                        Bass.ChannelSetAttribute(_flyA.FxHandle, ChannelAttribute.Volume, 1f);
+                        Log.Info("AudioManager: fly loop crossfade complete");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AudioManager: Update exception", ex);
+            }
+        }
+
+        public static void OnCrash()
+        {
+            if (!_initialized) return;
+            try
+            {
+                // Быстрое затухание за 300 мс
+                SlideVolumeToZero(CRASH_FADE_MS);
+                _fading = true;
+                _fadeElapsed = 0f;
+                _fadeDelay = CRASH_FREE_DELAY;
+
+                // Сброс флагов — новые события не обрабатываем
+                _startPlaying = false;
+                _startXfadeDone = false;
+                _flyXfadeScheduled = false;
+
+                Log.Info("AudioManager: OnCrash, fading out");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AudioManager: OnCrash exception", ex);
+            }
+        }
+
+        public static void OnStop()
+        {
+            if (!_initialized) return;
+            try
+            {
+                // Плавное затухание за 500 мс
+                SlideVolumeToZero(STOP_FADE_MS);
+                _fading = true;
+                _fadeElapsed = 0f;
+                _fadeDelay = STOP_FREE_DELAY;
+
+                _startPlaying = false;
+                _startXfadeDone = false;
+                _flyXfadeScheduled = false;
+
+                Log.Info("AudioManager: OnStop, fading out");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AudioManager: OnStop exception", ex);
+            }
+        }
+
+        // Применить затухание ко всем активным стримам через BASS Slide
+        private static void SlideVolumeToZero(float durationMs)
+        {
+            int ms = (int)durationMs;
+            if (_start.Active)
+                Bass.ChannelSlideAttribute(_start.FxHandle, ChannelAttribute.Volume, 0f, ms);
+            if (_flyA.Active)
+                Bass.ChannelSlideAttribute(_flyA.FxHandle, ChannelAttribute.Volume, 0f, ms);
+            if (_flyB.Active)
+                Bass.ChannelSlideAttribute(_flyB.FxHandle, ChannelAttribute.Volume, 0f, ms);
+        }
+
+        // Освободить все стримы
+        private static void FreeAll()
+        {
+            FreeStream(ref _start);
+            FreeStream(ref _flyA);
+            FreeStream(ref _flyB);
+        }
+
+        // Освободить один стрим
+        private static void FreeStream(ref AudioStream stream)
+        {
+            if (!stream.Active) return;
+            try
+            {
+                Bass.ChannelStop(stream.FxHandle);
+                Bass.StreamFree(stream.FxHandle);
+                Bass.StreamFree(stream.DecoderHandle);
+                if (stream.PinnedData.IsAllocated)
+                    stream.PinnedData.Free();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("AudioManager: FreeStream exception", ex);
+            }
+            stream = default;
+        }
+
+        // Перевод центов → полутона → применить к стриму.
+        // ВАЖНО: ChannelAttribute.Pitch принимает значение в ПОЛУТОНАХ.
+        // ВАЖНО: вызывать только если stream.Active == true.
+        // ВАЖНО: темп (скорость воспроизведения) НЕ ТРОГАЕМ — всегда 0.
+        private static void SetPitchCents(ref AudioStream stream, float cents)
+        {
+            if (!stream.Active) return;
+            float semitones = cents / 100f;
+            Bass.ChannelSetAttribute(stream.FxHandle, ChannelAttribute.Pitch, semitones);
+        }
+
+        // Создать стрим из embedded-ресурса (MP3 из памяти, без файла на диске)
+        private static AudioStream CreateStreamFromEmbedded(string resourceName)
+        {
+            byte[] data = ReadEmbeddedResource(resourceName);
+            if (data == null)
+            {
+                Log.Error("AudioManager: embedded resource not found: " + resourceName);
+                return default;
+            }
+
+            // Закрепляем массив в памяти — GC не должен его перемещать
+            // пока BASS держит указатель на этот буфер
+            GCHandle pin = GCHandle.Alloc(data, GCHandleType.Pinned);
+            IntPtr ptr = pin.AddrOfPinnedObject();
+
+            int dec = Bass.CreateStream(ptr, 0, data.Length,
+                                        BassFlags.Decode | BassFlags.Float);
+            if (dec == 0)
+            {
+                pin.Free();
+                Log.Error($"AudioManager: Bass.CreateStream failed for {resourceName}: {Bass.LastError}");
+                return default;
+            }
+
+            int fx = BassFx.TempoCreate(dec, BassFlags.Default);
+            if (fx == 0)
+            {
+                pin.Free();
+                Bass.StreamFree(dec);
+                Log.Error($"AudioManager: BassFx.TempoCreate failed for {resourceName}: {Bass.LastError}");
+                return default;
+            }
+
+            Bass.ChannelGetInfo(fx, out ChannelInfo info);
+
+            // Темп = 0% (скорость воспроизведения не меняется, только питч)
+            Bass.ChannelSetAttribute(fx, ChannelAttribute.Tempo, 0f);
+
+            // Быстрый алгоритм питч-шифтинга — меньше CPU на игровой машине
+            Bass.ChannelSetAttribute(fx, ChannelAttribute.TempoUseQuickAlgorithm, 1f);
+
+            return new AudioStream
+            {
+                DecoderHandle = dec,
+                FxHandle = fx,
+                BaseFreq = info.Frequency,
+                PinnedData = pin,
+                Active = true
+            };
+        }
+
+        // Прочитать embedded-ресурс по имени (LogicalName из .csproj)
+        private static byte[] ReadEmbeddedResource(string name)
+        {
+            Assembly asm = Assembly.GetExecutingAssembly();
+            using (Stream s = asm.GetManifestResourceStream(name))
+            {
+                if (s == null) return null;
+                byte[] buf = new byte[s.Length];
+                s.Read(buf, 0, buf.Length);
+                return buf;
+            }
+        }
+
+        // Извлечь нативные DLL во временную папку и загрузить через Win32 LoadLibrary
+        private static void ExtractAndLoadNative()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "FpvDroneMod");
+            Directory.CreateDirectory(tempDir);
+
+            foreach (string dllName in new[] { "bass.dll", "bass_fx.dll" })
+            {
+                string destPath = Path.Combine(tempDir, dllName);
+                
+                // Извлечь из ресурсов если ещё не извлечено
+                if (!File.Exists(destPath))
+                {
+                    byte[] data = ReadEmbeddedResource(dllName);
+                    if (data == null)
+                        throw new Exception($"AudioManager: embedded native dll not found: {dllName}");
+                    File.WriteAllBytes(destPath, data);
+                }
+                
+                // Явно загрузить через Win32 API
+                IntPtr handle = LoadLibrary(destPath);
+                if (handle == IntPtr.Zero)
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    throw new Exception($"AudioManager: LoadLibrary failed for {dllName}, Win32 error {err}");
+                }
+            }
+            
+            Log.Info("AudioManager: native DLLs extracted and loaded from " + tempDir);
+        }
+
+        private static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Autopilot.cs
+using System;
+using GTA;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    internal static class Autopilot
+    {
+        public static void Update(DroneState s, float dtReal)
+        {
+            if (s.AutopilotMode == AutoPilotState.Off) return;
+
+            // If the target is destroyed or disappears, drop the lock.
+            if (s.LockedTarget == null || !s.LockedTarget.Exists() || s.LockedTarget.IsDead)
+            {
+                s.AutopilotMode = AutoPilotState.Off;
+                s.LockedTarget = null;
+                return;
+            }
+
+            // Check line of sight. If the target stays hidden behind map geometry for >2s, drop the lock.
+            var ray = World.Raycast(s.P, s.LockedTarget.Position, IntersectFlags.Map, s.LockedTarget);
+            if (ray.DidHit) s.TargetLostTimer += dtReal;
+            else s.TargetLostTimer = 0f;
+
+            if (s.TargetLostTimer > 2.0f)
+            {
+                s.AutopilotMode = AutoPilotState.Off;
+                s.LockedTarget = null;
+                return;
+            }
+
+            Vector3 targetPos = s.LockedTarget.Position;
+            Vector3 dronePos = s.P;
+
+            if (s.AutopilotMode == AutoPilotState.Tracking)
+            {
+                // Loiter above the target at roughly +30m AGL relative to the target.
+                float targetZ = targetPos.Z + 30f;
+                float altDiff = targetZ - dronePos.Z;
+                float desiredThrottle = 15f + altDiff * 0.8f;
+                s.T = Physics.Clamp(desiredThrottle, Config.TMin, Settings.CurrentProfile.TMax);
+
+                Vector3 dir = targetPos - dronePos;
+                if (dir.LengthSquared() > 0.001f)
+                    AimAt(s, Vector3.Normalize(dir), dtReal, 3.0f);
+            }
+            else if (s.AutopilotMode == AutoPilotState.Attacking)
+            {
+                // Terminal dive: smoothly spool up throttle as if holding T.
+                Physics.AdjustThrottle(s, Config.ThrottleRate * dtReal);
+
+                // Kinetic lead: use line-of-sight closing velocity so head-on targets add speeds correctly.
+                Vector3 toTarget = targetPos - dronePos;
+                float dist = toTarget.Length();
+                if (dist <= 0.001f) return;
+
+                Vector3 dirToTarget = toTarget / dist;
+                float closingSpeed = Vector3.Dot(s.V - s.LockedTarget.Velocity, dirToTarget);
+                if (closingSpeed < 5f) closingSpeed = 5f;
+
+                float timeToImpact = dist / closingSpeed;
+                Vector3 predictedPos = targetPos + (s.LockedTarget.Velocity * timeToImpact);
+
+                Vector3 dir = predictedPos - dronePos;
+                if (dir.LengthSquared() > 0.001f)
+                    AimAt(s, Vector3.Normalize(dir), dtReal, 8.0f);
+            }
+        }
+
+        private static void AimAt(DroneState s, Vector3 dir, float dt, float speed)
+        {
+            float desiredPsi = (float)Math.Atan2(-dir.X, dir.Y);
+            float desiredTheta = (float)Math.Asin(dir.Z);
+
+            // Avoid spin when crossing ±PI.
+            float dPsi = desiredPsi - s.Psi;
+            while (dPsi > MathF.Pi) dPsi -= 2 * MathF.Pi;
+            while (dPsi < -MathF.Pi) dPsi += 2 * MathF.Pi;
+
+            float k = Math.Min(1f, dt * speed);
+            s.Psi += dPsi * k;
+            s.Theta += (desiredTheta - s.Theta) * k;
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Collision.cs
+using System;
+using GTA;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    // Section 9 (rewritten — multi-ray swept-volume contact detection).
+    //
+    // A single thin raycast through fast objects (cars, ragdoll peds) tunnels
+    // through thin geometry — doors, windows, hood corners — and ends up
+    // hitting the asphalt under the vehicle. This bug was the root cause of
+    // the "exploded under the car instead of into the door" behavior.
+    //
+    // Fix: instead of one ray, fire a small fan of NumFanRays parallel rays
+    // covering the drone's effective hit-volume:
+    //
+    //   ray 0: along the swept axis (prevP → newP + margin)
+    //   ray 1..4: same direction, offset by ±DroneRadius along two axes
+    //             perpendicular to the sweep direction
+    //
+    // The closest hit across all rays is treated as the impact point. Only
+    // 5 raycasts per flight tick, all synchronous — same cost as Signal's
+    // existing wall-counting pass and orders of magnitude cheaper than going
+    // async with ShapeTest.StartTestSweptSphere (which spans frames).
+    internal static class Collision
+    {
+        public enum Outcome
+        {
+            Clear,
+            ImpactNow
+        }
+
+        public static (Outcome outcome, Vector3 hitPoint, Vector3 hitNormal, Entity hitEntity, float speed) Step(
+            DroneState s, Vector3 prevP, float dtGame, Ped ignorePed)
+        {
+            float speed = s.V.Length();
+
+            Vector3 sweep = s.P - prevP;
+            float sweepLen = sweep.Length();
+            Vector3 dir = sweepLen > 0.001f ? sweep / sweepLen : s.F;
+
+            // Build a stable orthonormal basis perpendicular to the sweep
+            // direction. Using world-up as a reference vector except when
+            // sweep is nearly vertical, in which case fall back to world-east.
+            Vector3 worldUp = new Vector3(0, 0, 1);
+            Vector3 axisA = Vector3.Cross(dir, worldUp);
+            if (axisA.LengthSquared() < 1e-4f)
+                axisA = Vector3.Cross(dir, new Vector3(1, 0, 0));
+            axisA = Vector3.Normalize(axisA);
+            Vector3 axisB = Vector3.Normalize(Vector3.Cross(dir, axisA));
+
+            float r = Config.DroneRadius;
+
+            // 5-ray fan: centre + 4 perpendicular offsets.
+            Vector3[] offsets = new Vector3[]
+            {
+                Vector3.Zero,
+                axisA *  r,
+                axisA * -r,
+                axisB *  r,
+                axisB * -r,
+            };
+
+            float bestDist = float.MaxValue;
+            Vector3 bestHit = s.P;
+            Vector3 bestNormal = -dir;
+            Entity bestEntity = null;
+            bool didHit = false;
+
+            // Start from the real swept volume front plane (prevP + offsets).
+            // We intentionally do NOT extend origin backwards, because that
+            // causes false-positive hits on surfaces the drone is already
+            // moving away from (e.g. wall behind a reversing drift).
+            Vector3 originBase = prevP;
+
+            for (int i = 0; i < offsets.Length; i++)
+            {
+                Vector3 origin = originBase + offsets[i];
+                Vector3 endPt  = s.P + offsets[i] + dir * Config.ContactMargin;
+
+                // Everything (511) so vehicles/peds/objects/map/glass all hit.
+                var ray = World.Raycast(origin, endPt, IntersectFlags.Everything, ignorePed);
+                if (!ray.DidHit) continue;
+
+                // Reject hits that lie behind prevP along the travel
+                // direction — those are walls the drone has already passed
+                // and would be false positives because we extended origin
+                // backward by DroneRadius.
+                Vector3 fromPrev = ray.HitPosition - prevP;
+                float along = Vector3.Dot(fromPrev, dir);
+                float margin = Math.Max(0.05f, Config.DroneRadius * 0.5f);
+                if (along < -margin) continue;
+
+                float d = (ray.HitPosition - origin).Length();
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    bestHit  = ray.HitPosition;
+                    bestNormal = ray.SurfaceNormal.LengthSquared() > 0.0001f
+                        ? Vector3.Normalize(ray.SurfaceNormal)
+                        : -dir;
+                    bestEntity = ray.HitEntity;
+                    didHit   = true;
+                }
+            }
+
+            if (!didHit)
+            {
+                // Fallback proximity probes for near-overlap cases where sweep
+                // ray misses thin geometry at a shallow angle.
+                Vector3[] probeOffsets = new Vector3[]
+                {
+                    dir * r,
+                    -dir * r,
+                    axisA * r,
+                    -axisA * r,
+                    axisB * r,
+                    -axisB * r,
+                };
+
+                for (int i = 0; i < probeOffsets.Length; i++)
+                {
+                    var probe = World.Raycast(s.P, s.P + probeOffsets[i],
+                                              IntersectFlags.Everything, ignorePed);
+                    if (!probe.DidHit) continue;
+
+                    Vector3 dp = probe.HitPosition - prevP;
+                    if (Vector3.Dot(dp, dir) < -0.05f) continue;
+
+                    float d = (probe.HitPosition - s.P).Length();
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        bestHit = probe.HitPosition;
+                        bestNormal = probe.SurfaceNormal.LengthSquared() > 0.0001f
+                            ? Vector3.Normalize(probe.SurfaceNormal)
+                            : -dir;
+                        bestEntity = probe.HitEntity;
+                        didHit = true;
+                    }
+                }
+            }
+
+            if (!didHit)
+                return (Outcome.Clear, s.P, -dir, null, speed);
+
+            return (Outcome.ImpactNow, bestHit, bestNormal, bestEntity, speed);
+        }
+
+        // Spec 9.2 — explosion at hit point + preset-driven physical impulse
+        // on nearby vehicles. HP damage is calculated independently from the
+        // FORCE / IMPULSE preset; the preset controls shock radius, force,
+        // camera shake, audibility, and visibility.
+        //
+        // approachDir is retained for call-site compatibility; the shockwave
+        // force is now computed radially as entity.Position - hitPoint.
+        public static void Detonate(Vector3 hitPoint, Vector3 approachDir, float speed)
+        {
+            // HP damage is intentionally independent from the impulse preset.
+            int idx = Settings.DamageOverrideIndex;
+            if (idx < 0) idx = 0;
+            if (idx >= Settings.DamageValues.Length) idx = Settings.DamageValues.Length - 1;
+            float hpValue = Settings.DamageValues[idx];
+
+            // Convert the selected HP value into GTA's damageScale
+            // (1000 HP ~= 5.0 scale), then add only the existing speed bonus.
+            float baseScale = hpValue * 0.005f;
+            float vNorm = (speed - Config.DamageScaleMinSpeed)
+                          / Math.Max(0.01f, Settings.CurrentProfile.TMax - Config.DamageScaleMinSpeed);
+            vNorm = Math.Max(0f, Math.Min(1f, vNorm));
+            float damageScale = baseScale * (1.0f + 0.2f * vNorm);
+
+            Settings.ImpulsePreset impulsePreset = Settings.CurrentImpulsePreset;
+
+            Ped ownerPed = null;
+            if (Settings.GiveStars)
+            {
+                try { ownerPed = Game.Player?.Character; } catch { ownerPed = null; }
+            }
+
+            Natives.AddOwnedExplosion(
+                ownerPed,
+                hitPoint,
+                explosionType: Settings.CurrentExplosionId,
+                damageScale: damageScale,
+                audible: impulsePreset.Audible,
+                invisible: impulsePreset.Invisible,
+                cameraShake: impulsePreset.CameraShake);
+
+            // Apply the impulse preset as a separate physical shockwave layer.
+            // Direction is purely radial from the actual hit point to each
+            // entity. If the hit point is above an entity and the raw radial
+            // vector points down into the ground, flip Z so vehicles are lifted
+            // instead of being pinned downward.
+            if (impulsePreset.ForceScale <= 0f || impulsePreset.Radius <= 0f)
+                return;
+
+            try
+            {
+                Vehicle[] nearby = World.GetNearbyVehicles(hitPoint, impulsePreset.Radius);
+                if (nearby != null)
+                {
+                    foreach (var v in nearby)
+                    {
+                        if (v == null || !v.Exists()) continue;
+
+                        Vector3 radial = v.Position - hitPoint;
+                        float dist = radial.Length();
+                        if (dist < 0.01f || dist > impulsePreset.Radius) continue;
+
+                        if (radial.Z < 0f)
+                            radial.Z = -radial.Z;
+
+                        if (radial.LengthSquared() <= 0.000001f) continue;
+
+                        Vector3 radialDir = Vector3.Normalize(radial);
+                        Vector3 force = radialDir
+                                        * Config.VehicleImpulsePerSpeed
+                                        * impulsePreset.ForceScale
+                                        * speed;
+
+                        // Apply force at the actual hit point converted to the
+                        // entity's local coordinates. This off-centre impulse
+                        // creates torque, causing flips and rolls instead of
+                        // simple linear sliding.
+                        Vector3 localOffset = Natives.GetOffsetFromEntityGivenWorldCoords(v, hitPoint);
+                        Natives.ApplyForceToEntity(v, force, localOffset, forceType: 1);
+                    }
+                }
+            }
+            catch
+            {
+                // Impulse is a polish layer; never let an exception here
+                // poison the cinematic phase.
+            }
+        }
+
+        // Physical contact impulse from drone mass and impact geometry.
+        // We compute the closing speed along surface normal and apply an
+        // impulse at hit point before the explosion sequence.
+        public static void ApplyKineticImpactImpulse(
+            Entity hitEntity,
+            Vector3 hitPoint,
+            Vector3 hitNormal,
+            Vector3 droneVelocity)
+        {
+            try
+            {
+                if (hitEntity == null || !hitEntity.Exists()) return;
+
+                Vector3 relVel = droneVelocity - hitEntity.Velocity;
+                float closingSpeed = -Vector3.Dot(relVel, hitNormal);
+                if (closingSpeed <= 0.05f) return;
+
+                Settings.ImpulsePreset impulsePreset = Settings.CurrentImpulsePreset;
+
+                float j = Config.DroneMassKg
+                          * closingSpeed
+                          * Config.ImpactImpulseScale
+                          * impulsePreset.ForceScale;
+                if (j <= 0.01f) return;
+
+                Vector3 impulse = relVel.LengthSquared() > 0.001f
+                    ? Vector3.Normalize(relVel) * j
+                    : -hitNormal * j;
+
+                Vector3 localOffset = Natives.GetOffsetFromEntityGivenWorldCoords(hitEntity, hitPoint);
+                Natives.ApplyForceToEntity(hitEntity, impulse, localOffset, forceType: 1);
+            }
+            catch
+            {
+                // Impact impulse should never crash flight loop.
+            }
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Config.cs
+// Parameter table from spec section 14.
+// All values are tunable; comments show the section that uses them.
+
+namespace FpvDroneMod
+{
+    internal static class Config
+    {
+        // 4.1 Angles
+        public const float SYaw = 0.08f;            // mouse → yaw rate (rad / per (dt*60))
+        public const float SPitch = 0.06f;          // mouse → pitch rate
+        public const float ThetaMax = 1.2f;         // pitch clamp (rad)
+
+        // 4.2 Roll camera. Casual tuning: KRoll halved (10 → 4) and PhiMax
+        // tightened so the screen doesn't visibly twist during fast yaws —
+        // FPV-pilot eye candy that confused first-time fliers.
+        public const float KRoll = 4.0f;
+        public const float KRollResponse = 7.0f;
+        public const float KRollRecovery = 6.0f;
+        public const float PhiMax = 0.30f;
+
+        // 4.4 Throttle
+        public const float TMin = 0.0f;
+        public const float TMax = 35.0f;            // m/s effective target speed
+        public const float DTStep = 2.0f;           // T/Y step size
+        public const float ThrottleRate = 12.0f;    // m/s per second while T/Y held
+        public const float TInitial    = 0.0f;   // дрон стартует с нулевой скорости
+        public const float TSpoolUp    = 10.5f;  // ~37.8 км/ч после раскрутки
+        public const float TSpoolDuration = 1.0f; // время раскрутки от 0 до TSpoolUp (сек реального времени)
+
+        // 4.5 Vertical
+        public const float VVertStep = 8.0f;        // PgUp/PgDn
+
+        // 4.6 Gravity
+        // Casual tuning: spec value 4.0 produced an obvious "sag" at any
+        // throttle below max (g_eff = GWorld * (1 - T/TMax)). At 1.0 the drone
+        // basically holds altitude as long as there is some throttle — much
+        // more intuitive for a casual flier. Battery-dead path uses full GWorld.
+        public const float GWorld = 1.0f;           // m/s²
+
+        // 4.7-4.8 Inertia + drag
+        // Casual tuning: KInertia 5 → 25 makes V chase V_target almost
+        // instantly (≈ 40 ms time constant). The drone "snaps" to the camera
+        // direction instead of drifting on its own momentum.
+        public const float KInertia = 25.0f;
+        public const float KInertiaDead = 1.0f;
+        public const float CDrag = 0.020f;
+        public const float CDragDead = 0.05f;
+
+        // 6.1 Battery
+        public const float KBaseDrain = 0.4f;       // %/s
+        public const float KThrottleDrain = 0.7f;   // %/s
+        public const float BCrit = 30.0f;           // % low-battery threshold
+        public const float BInitial = 100.0f;
+        public const float SinkMax = 4.0f;          // m/s
+
+        // 7 Signal — city / field profiles. Values bumped from the v1.1 spec
+        // baseline (audit #5): 900 m city max was too restrictive — by the
+        // time you fly past a couple of blocks you hit lost signal, which
+        // doesn't match player expectation for a casual fun mod. Field
+        // values rescaled in proportion.
+        public const float DSafeCity = 700.0f;
+        public const float DCritCity = 1200.0f;
+        public const float DMaxCity = 2000.0f;
+        public const float DSafeField = 3000.0f;
+        public const float DCritField = 5500.0f;
+        public const float DMaxField = 9000.0f;
+        public const float WallPenalty = 0.08f;     // -8% Q per wall
+        public const float LosCheckInterval = 0.5f; // s realtime
+        public const float EmergencyOverDMax = 200.0f;
+
+        // 8 Degradation thresholds
+        public const float IDegraded = 0.50f;
+        public const float ILost = 0.85f;
+        public const float LostHoldTime = 0.5f;     // realtime
+        public const float MaxInputDelayMs = 200.0f;
+        public const float MaxDropChance = 0.40f;
+        public const float IRecover = 0.70f;
+        public const float RecoverHoldTime = 1.0f;  // realtime
+        public const float LostThrottleRamp = 1.5f; // lerp k for T → TMax in autonomous
+
+        // 9 Collision / explosion
+        public const float TPredict = 0.35f;        // realtime threshold for slow-mo
+        public const float ExplosionRadius = 5.0f;  // informational
+        // NOTE: ExplosionRadius is documentation-only right now; GTA's
+        // ADD_EXPLOSION uses an internal preset radius based on explosionType.
+        // Gameplay tuning uses VehicleImpulseRadius below.
+        // ExplosionType.Grenade is type 2 in GTA native enum — see Collision.cs
+
+        // 10 Slow-mo
+        public const float TimeScaleSlow = 0.15f;
+        public const float TimeScaleRamp = 0.1f;    // realtime
+        public const float CamTransition = 0.08f;   // realtime fallback for camera move
+        public const float CamHoldAfterExplosion = 2.0f;
+        public const float DCam = 6.0f;
+        public const float HCam = 2.0f;
+        public const float CamMinClearance = 2.0f;
+        // Extra distance added to the per-frame travel ray. Acts as the
+        // "feeler" margin so very slow ramming into a wall still detonates,
+        // and as an anti-tunneling safety on the high-speed end.
+        public const float ContactMargin = 0.30f;
+        // After contact, the drone is snapped to hit_point − F * SnapInset so
+        // the FPV camera "kisses" the surface but doesn't penetrate it.
+        public const float SnapInset = 0.05f;
+        // Effective hit-volume radius of the drone for the multi-ray fan.
+        // Larger → more reliable hits on thin geometry (car doors, glass)
+        // at the cost of detonating slightly before the centre crosshair
+        // visually touches.
+        public const float DroneRadius = 0.25f;
+
+        // Damage / impulse scaling vs. impact speed.
+        //   speed = DamageScaleMinSpeed → damageScale = 1.0  (stock blast)
+        //   speed = TMax                → damageScale = DamageScaleMax (boosted)
+        public const float DamageScaleMinSpeed = 5.0f;
+        public const float DamageScaleMax = 3.0f;
+        // Range within which we apply a directional shock impulse to vehicles
+        // post-detonation (audit #3 fix).
+        public const float VehicleImpulseRadius = 8.0f;
+        // Newton-seconds of impulse per (m/s of impact speed) per (1.0 - dist/R).
+        // Tuned so a TMax kamikaze flips a Phantom truck.
+        public const float VehicleImpulsePerSpeed = 4000.0f;
+        // Approximate drone mass for contact impulse transfer (kg).
+        public const float DroneMassKg = 1.8f;
+        // Extra scaling so gameplay impact impulse is noticeable on heavy props/cars.
+        public const float ImpactImpulseScale = 120.0f;
+        public const float AutoLevelStrength = 0.0f;     // 0 = off (casual camera-aim flight)
+        public const float AutoLevelInputDeadzone = 0.005f;
+
+        // 12 HUD
+        public const float KHorizonScale = 150.0f;  // px / rad
+
+        // 13 Frame loop
+        public const float DtClampMax = 0.05f;
+        public const int FpvFov = 80;
+        public const float SpawnHeight = 3.0f;
+        public const int PlayerAlpha = 100;
+
+        // Win32 raw-mouse capture: pixels of cursor delta = 1.0 normalized
+        // input unit. Lower = more sensitive. 250 px is a forgiving default
+        // tuned for casual play — first-time fliers who haven't pre-scaled
+        // their mouse for a 0.08 rad/frame yaw factor don't get whipped
+        // around. FPV pilots can drop this toward 100 if it feels sluggish.
+        public const float MousePixelsPerUnit = 250.0f;
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Effects.cs
+using System;
+using System.Drawing;
+using GTA;
+using GTA.UI;
+
+namespace FpvDroneMod
+{
+    // Spec section 11. Interference effects — driven by I.
+    //
+    // Honest CRT post-process is impossible without an external shader hook,
+    // so we approximate (M2):
+    //  - Discrete ANIMPOSTFX presets at 3 escalating tiers.
+    //  - UIRectangle overlays for noise / scanlines / glitch / blackout.
+    internal static class Effects
+    {
+        private static readonly Random Rng = new Random();
+
+        // Tier 0: no effect (I < 0.50). We make sure to STOP previous effects.
+        // Tier 1: 0.50 ≤ I < 0.70 — chromatic-ish wash.
+        // Tier 2: 0.70 ≤ I < 0.85 — heavier wash + tint.
+        // Tier 3: I ≥ 0.85         — death-fail border, cranks the dial.
+        private static int _currentTier = -1;
+        private static readonly string[] TierFx = { null, "DrugsMichaelAliensFightIn", "MP_Bull_tox", "DeathFailOut" };
+
+        public static void Update(float I)
+        {
+            int tier = 0;
+            if (I >= 0.85f) tier = 3;
+            else if (I >= 0.70f) tier = 2;
+            else if (I >= 0.50f) tier = 1;
+
+            if (tier == _currentTier) return;
+
+            // Stop previous (skip null at tier 0).
+            if (_currentTier > 0 && _currentTier < TierFx.Length)
+                Natives.AnimpostfxStop(TierFx[_currentTier]);
+
+            if (tier > 0)
+                Natives.AnimpostfxPlay(TierFx[tier], 0, true);
+
+            _currentTier = tier;
+        }
+
+        public static void StopAll()
+        {
+            Natives.AnimpostfxStopAll();
+            _currentTier = -1;
+            _vSyncRollY = 0f;
+            _blackoutUntil = 0f;
+        }
+
+        // Per-frame UI overlays. Use the live UI canvas dimensions
+        private static float W => GTA.UI.Screen.Width;
+        private static float H => GTA.UI.Screen.Height;
+
+        private static float _vSyncRollY = 0f;
+        private static float _blackoutUntil = 0f;
+
+        public static void DrawOverlays(float I)
+        {
+            if (I <= 0.05f) return;
+
+            DrawAnalogStatic(I);
+
+            if (I > 0.35f)
+            {
+                DrawMultipathTearing(I);
+            }
+
+            if (I > 0.50f)
+            {
+                DrawChromaShift(I);
+                DrawVSyncRoll(I);
+            }
+
+            if (I > 0.75f)
+            {
+                MaybeDrawBlackout(I);
+            }
+        }
+
+        // 11.1 Analog white noise: horizontal strokes instead of square pixels.
+        private static void DrawAnalogStatic(float I)
+        {
+            // Fewer elements, longer lines: cheaper for CPU and closer to analog static.
+            int count = (int)(I * 200);
+            if (count > 200) count = 200;
+
+            int baseAlpha = (int)(10 + I * 150);
+
+            for (int i = 0; i < count; i++)
+            {
+                float x = (float)(Rng.NextDouble() * W);
+                float y = (float)(Rng.NextDouble() * H);
+                float length = 10f + (float)(Rng.NextDouble() * 150f);
+                float height = 1f + (float)(Rng.NextDouble() * 2f);
+
+                int alpha = Math.Min(255, baseAlpha + Rng.Next(0, 50));
+                Color c = Color.FromArgb(alpha, 200, 200, 200);
+
+                new ContainerElement(new PointF(x, y), new SizeF(length, height), c).Draw();
+            }
+        }
+
+        // 11.2 Multipathing: flickering horizontal tearing from degraded signal.
+        private static void DrawMultipathTearing(float I)
+        {
+            int bands = (int)(I * 10f);
+            if (bands > 10) bands = 10;
+
+            for (int i = 0; i < bands; i++)
+            {
+                // Bands flicker heavily.
+                if (Rng.NextDouble() > 0.4) continue;
+
+                float y = (float)Rng.NextDouble() * H;
+                float h = 4f + (float)Rng.NextDouble() * 30f;
+
+                int alpha = (int)(I * I * 250);
+                alpha = Math.Min(220, alpha);
+                Color c = Color.FromArgb(alpha, 180, 180, 190);
+
+                new ContainerElement(new PointF(0, y), new SizeF(W, h), c).Draw();
+            }
+        }
+
+        // 11.3 Chroma loss: magenta and green artifact bands.
+        private static void DrawChromaShift(float I)
+        {
+            float chance = I * 1.5f;
+            if (Rng.NextDouble() > chance) return;
+
+            float y = (float)Rng.NextDouble() * H;
+            float h = 10f + (float)Rng.NextDouble() * 50f;
+
+            int alpha = (int)(20 + I * 40);
+            alpha = Math.Min(100, alpha);
+
+            // Alternate magenta and green chroma artifacts.
+            Color c = Rng.NextDouble() > 0.5
+                ? Color.FromArgb(alpha, 255, 0, 255)
+                : Color.FromArgb(alpha, 0, 255, 0);
+
+            new ContainerElement(new PointF(0, y), new SizeF(W, h), c).Draw();
+        }
+
+        // 11.4 V-Sync loss: wide rolling dark band.
+        private static void DrawVSyncRoll(float I)
+        {
+            // Roll speed depends on interference intensity.
+            float rollSpeed = 150f + (I * 300f);
+            _vSyncRollY = (_vSyncRollY + Game.LastFrameTime * rollSpeed) % H;
+
+            int alpha = (int)(I * 80);
+            alpha = Math.Min(150, alpha);
+            Color c = Color.FromArgb(alpha, 15, 15, 15);
+
+            // Main dark sync-loss band.
+            new ContainerElement(new PointF(0, _vSyncRollY), new SizeF(W, 60f), c).Draw();
+            // Bright white spark at the tear boundary.
+            new ContainerElement(new PointF(0, _vSyncRollY + 58f), new SizeF(W, 2f), Color.FromArgb(alpha, 255, 255, 255)).Draw();
+        }
+
+        // 11.5 Full blackout for a fraction of a second.
+        private static void MaybeDrawBlackout(float I)
+        {
+            float now = Game.GameTime / 1000.0f;
+            if (now < _blackoutUntil)
+            {
+                new ContainerElement(new PointF(0, 0), new SizeF(W, H),
+                    Color.FromArgb(255, 10, 10, 10)).Draw();
+                return;
+            }
+
+            float perFrame = ((I - 0.75f) / 0.25f) * 3f * Game.LastFrameTime;
+            if (Rng.NextDouble() < perFrame)
+            {
+                // Short black-screen flashes (40 to 150 ms).
+                float duration = 0.04f + (float)Rng.NextDouble() * 0.11f;
+                _blackoutUntil = now + duration;
+            }
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Hud.cs
+using System;
+using System.Drawing;
+using GTA;
+using GTA.Math;
+using GTA.UI;
+
+namespace FpvDroneMod
+{
+    internal static class Hud
+    {
+        private static float ScreenW => GTA.UI.Screen.Width;
+        private static float ScreenH => GTA.UI.Screen.Height;
+
+        private static readonly Color White  = Color.FromArgb(255, 245, 245, 245);
+        private static readonly Color Red    = Color.FromArgb(255, 230, 60, 60);
+        private static readonly Color Green  = Color.FromArgb(255, 60, 230, 80);
+        private static readonly Color Dim    = Color.FromArgb(255, 180, 180, 180);
+
+        private const float ROW_H = 18f;
+        private const float TAPE_ROWS = 4f;
+        private const float SPD_STEP = 10f;
+        private const float ALT_STEP = 10f;
+
+        public static void Draw(DroneState s, float fpvFov)
+        {
+            DrawTopRow(s);
+            DrawCompassTape(s);
+            DrawSpeedTape(s);
+            DrawAltitudeTape(s);
+
+            if (s.Stage != FlightStage.Lost)
+            {
+                DrawCenterReticle(s);
+            }
+
+            DrawStatusBanner(s);
+            DrawHorizon(s);
+            DrawBottomLeftBatteryBlock(s);
+            DrawBottomRightInfo(s);
+        }
+
+        private static void DrawTopRow(DroneState s)
+        {
+            float topY = 25f;
+
+            // Left (GPS + Home)
+            DrawText($"LAT {s.P.Y,8:F4}", new PointF(30f, topY), 0.32f, White);
+            DrawText($"LON {s.P.X,8:F4}", new PointF(30f, topY + 18f), 0.32f, White);
+
+            float distHome = (s.P - s.Spawn).Length();
+            string homeStr = distHome >= 1000f ? $"HOME {distHome / 1000f:F1}k" : $"HOME {(int)distHome}m";
+            DrawText(homeStr, new PointF(30f, topY + 36f), 0.32f, White);
+
+            // Right (RSSI) - Moved down to Y=60 to avoid wanted level stars
+            int rssi = (int)Math.Round(Math.Max(0f, Math.Min(1f, s.Q)) * 100f);
+            Color rssiColor = rssi < 30 ? Red : White;
+            DrawText($"RSSI {rssi}%", new PointF(ScreenW - 100f, 60f), 0.32f, rssiColor);
+
+            if (s.Vision == VisionMode.Thermal)
+            {
+                DrawText("THERM", new PointF(ScreenW - 100f, 42f), 0.32f, White);
+            }
+            else if (s.Vision == VisionMode.NightVision)
+            {
+                DrawText("NVG", new PointF(ScreenW - 100f, 42f), 0.32f, Green);
+            }
+        }
+
+        private static void DrawCompassTape(DroneState s)
+        {
+            float cx = ScreenW * 0.5f;
+            float y = 25f;
+            float headingDeg = Normalize360(s.Psi * MathF.Rad2Deg);
+
+            const float pxPerDeg = 3.5f;
+            const float halfW = 150f;
+
+            DrawOsdLine(new PointF(cx - halfW, y), new SizeF(halfW * 2f, 2f), White);
+
+            for (int d = -45; d <= 45; d += 5)
+            {
+                float x = cx + d * pxPerDeg;
+                bool major = d % 15 == 0;
+                float h = major ? 10f : 5f;
+
+                DrawOsdLine(new PointF(x - 1f, y - h), new SizeF(2f, h), White);
+
+                if (major)
+                {
+                    int mark = (int)Normalize360(headingDeg + d);
+                    DrawText(mark.ToString("000"), new PointF(x - 12f, y - 24f), 0.28f, White);
+                }
+            }
+
+            DrawText("V", new PointF(cx - 5f, y + 2f), 0.30f, White);
+            DrawText($"{(int)headingDeg:000}", new PointF(cx - 14f, y + 16f), 0.34f, White);
+        }
+
+        private static void DrawSpeedTape(DroneState s)
+        {
+            float x = 60f;
+            float cy = ScreenH * 0.5f;
+            float speed = s.V.Length() * 3.6f;
+            int baseVal = (int)Math.Round(speed / SPD_STEP) * (int)SPD_STEP;
+
+            for (int i = -(int)TAPE_ROWS; i <= (int)TAPE_ROWS; i++)
+            {
+                int val = baseVal + i * (int)SPD_STEP;
+                if (val < 0) continue;
+
+                float frac = (speed - baseVal) / SPD_STEP;
+                float y = cy - (i - frac) * ROW_H;
+                if (Math.Abs(y - cy) < 12f) continue;
+                if (y < cy - TAPE_ROWS * ROW_H || y > cy + TAPE_ROWS * ROW_H) continue;
+
+                DrawOsdLine(new PointF(x - 8f, y), new SizeF(8f, 2f), White);
+                DrawText(val.ToString(), new PointF(x - 36f, y - 10f), 0.30f, White);
+            }
+
+            DrawOsdLine(new PointF(x, cy - TAPE_ROWS * ROW_H), new SizeF(2f, TAPE_ROWS * ROW_H * 2f), White);
+
+            DrawText(">", new PointF(x - 42f, cy - 12f), 0.35f, White);
+            DrawText($"{(int)speed}", new PointF(x - 30f, cy - 12f), 0.35f, White);
+            DrawText("KPH", new PointF(x - 34f, cy + TAPE_ROWS * ROW_H + 5f), 0.25f, White);
+        }
+
+        private static void DrawAltitudeTape(DroneState s)
+        {
+            float x = ScreenW - 60f;
+            float cy = ScreenH * 0.5f;
+            float alt = GetAltitudeAgl(s);
+            int baseVal = (int)Math.Round(alt / ALT_STEP) * (int)ALT_STEP;
+
+            for (int i = -(int)TAPE_ROWS; i <= (int)TAPE_ROWS; i++)
+            {
+                int val = baseVal + i * (int)ALT_STEP;
+                if (val < 0) continue;
+
+                float frac = (alt - baseVal) / ALT_STEP;
+                float y = cy - (i - frac) * ROW_H;
+                if (Math.Abs(y - cy) < 12f) continue;
+                if (y < cy - TAPE_ROWS * ROW_H || y > cy + TAPE_ROWS * ROW_H) continue;
+
+                DrawOsdLine(new PointF(x, y), new SizeF(8f, 2f), White);
+                DrawText(val.ToString(), new PointF(x + 12f, y - 10f), 0.30f, White);
+            }
+
+            DrawOsdLine(new PointF(x - 2f, cy - TAPE_ROWS * ROW_H), new SizeF(2f, TAPE_ROWS * ROW_H * 2f), White);
+
+            Color altColor = alt < 5f ? Red : White;
+            DrawText($"{(int)alt}", new PointF(x + 12f, cy - 12f), 0.35f, altColor);
+            DrawText("<", new PointF(x + 38f, cy - 12f), 0.35f, altColor);
+            DrawText("ALT", new PointF(x + 12f, cy + TAPE_ROWS * ROW_H + 5f), 0.25f, White);
+        }
+
+        private static void DrawCenterReticle(DroneState s)
+        {
+            float cx = ScreenW * 0.5f;
+            float cy = ScreenH * 0.5f;
+
+            Color reticleColor = White;
+            string statusText = "";
+            float dist = 0f;
+
+            // Определяем цвет прицела и текст дистанции.
+            if (s.AutopilotMode == AutoPilotState.Tracking && s.LockedTarget != null && s.LockedTarget.Exists())
+            {
+                reticleColor = Red;
+                dist = (s.P - s.LockedTarget.Position).Length();
+                statusText = $"TRK {FormatDistance(dist)}";
+            }
+            else if (s.AutopilotMode == AutoPilotState.Attacking && s.LockedTarget != null && s.LockedTarget.Exists())
+            {
+                // Мигающий красный при атаке.
+                reticleColor = (Game.GameTime % 200 < 100) ? Red : White;
+                dist = (s.P - s.LockedTarget.Position).Length();
+                statusText = $"ATK {FormatDistance(dist)}";
+            }
+            else if (s.PotentialTarget != null && s.PotentialTarget.Exists())
+            {
+                dist = (s.P - s.PotentialTarget.Position).Length();
+                statusText = $"TGT {FormatDistance(dist)}";
+            }
+
+            // 1. Левая линия (—).
+            DrawOsdLine(new PointF(cx - 24f, cy - 1f), new SizeF(12f, 2f), reticleColor);
+
+            // 2. Идеальный OSD-круг по центру (○).
+            DrawText("O", new PointF(cx - 7.5f, cy - 11.5f), 0.38f, reticleColor);
+
+            // 3. Вывод статуса и дистанции справа от прицела.
+            if (!string.IsNullOrEmpty(statusText))
+            {
+                DrawText(statusText, new PointF(cx + 12f, cy - 10f), 0.3f, reticleColor);
+            }
+        }
+
+        // Умное форматирование дистанции.
+        private static string FormatDistance(float meters)
+        {
+            if (meters >= 1000f)
+                return $"{meters / 1000f:F2}km";
+            if (meters >= 1f)
+                return $"{meters:F1}m";
+            if (meters >= 0.01f)
+                return $"{meters * 100f:F0}cm";
+
+            return $"{meters * 1000f:F0}mm";
+        }
+
+        private static void DrawStatusBanner(DroneState s)
+        {
+            string text = "ARMED"; Color c = White;
+
+            if (s.B <= 0.001f && s.MotorsDeadBannerT > 0f) { text = "MOTORS DEAD"; c = Red; }
+            else if (s.ImpactImminent) { text = "IMPACT IMMINENT"; c = Red; }
+            else if (s.Stage == FlightStage.Lost) { text = "AUTONOMOUS MODE"; c = Red; }
+            else if (s.Q < 0.15f) { text = "SIGNAL LOST"; c = Red; }
+            else if (s.SignalRestoredBannerT > 0f) { text = "SIGNAL RESTORED"; c = White; }
+            else if (s.B < 10f) { text = "CRITICAL BAT"; c = Red; }
+
+            DrawText(text, new PointF(ScreenW * 0.5f - 50f, ScreenH - 80f), 0.38f, c);
+        }
+
+        private static void DrawBottomLeftBatteryBlock(DroneState s)
+        {
+            // Y = ScreenH - 240 ensures we clear the GTA V minimap completely
+            float bx = 30f;
+            float by = ScreenH - 240f;
+
+            float volts = SimPackVoltage(s);
+            float amps = SimAmps(s);
+            Color vCol = volts < 14.0f ? Red : White;
+
+            DrawText($"MAIN {volts:F1}V", new PointF(bx, by), 0.32f, vCol);
+            DrawText($"CURR {amps:F1}A", new PointF(bx, by + 18f), 0.32f, White);
+            DrawText($"CONS {s.MahUsed:F0}mAh", new PointF(bx, by + 36f), 0.32f, White);
+        }
+
+        private static void DrawBottomRightInfo(DroneState s)
+        {
+            float bx = ScreenW - 130f;
+            float by = ScreenH - 240f;
+
+            float vSpeed = s.V.Z;
+            string vsSign = vSpeed >= 0 ? "+" : "";
+
+            float pitchDeg = s.Theta * MathF.Rad2Deg;
+            string pitchSign = pitchDeg >= 0 ? "+" : "";
+
+            DrawText($"VAR {vsSign}{vSpeed:F1}", new PointF(bx, by), 0.32f, White);
+            DrawText($"PTCH {pitchSign}{pitchDeg:F0}", new PointF(bx, by + 18f), 0.32f, White);
+            DrawText($"FLY {FormatTime(s.FlightTimerReal)}", new PointF(bx, by + 36f), 0.32f, White);
+        }
+
+        private static float SimPackVoltage(DroneState s)
+        {
+            float baseV = 13.2f + 3.6f * Math.Max(0f, Math.Min(100f, s.B)) / 100f;
+            float sag = SimAmps(s) * 0.015f;
+            return Math.Max(12.8f, baseV - sag);
+        }
+
+        private static float SimAmps(DroneState s) => (s.T / Settings.CurrentProfile.TMax) * 35f;
+
+        private static string FormatTime(float t)
+        {
+            int sec = (int)Math.Max(0f, t);
+            return $"{sec / 60:00}:{sec % 60:00}";
+        }
+
+        private static float GetAltitudeAgl(DroneState s)
+        {
+            float groundZ;
+            if (!World.GetGroundHeight(s.P, out groundZ, GetGroundHeightMode.Normal)) groundZ = s.P.Z;
+            return Math.Max(0f, s.P.Z - groundZ);
+        }
+
+        private static float Normalize360(float deg)
+        {
+            while (deg < 0f) deg += 360f;
+            while (deg >= 360f) deg -= 360f;
+            return deg;
+        }
+
+        private static void DrawHorizon(DroneState s)
+        {
+            float cx = ScreenW / 2f;
+            float cy = ScreenH / 2f;
+
+            float gap = 45f;
+            float arm = 15f;
+
+            DrawOsdLine(new PointF(cx - gap - arm, cy), new SizeF(arm, 2f), White);
+            DrawOsdLine(new PointF(cx - gap - arm, cy - 5f), new SizeF(2f, 7f), White);
+            DrawOsdLine(new PointF(cx + gap, cy), new SizeF(arm, 2f), White);
+            DrawOsdLine(new PointF(cx + gap + arm - 2f, cy - 5f), new SizeF(2f, 7f), White);
+
+            float yOff = s.Theta * Config.KHorizonScale;
+            float yCenter = cy + yOff;
+            float angleRad = -s.PhiCam;
+
+            const int segments = 24;
+            const float halfLen = 160f;
+            float dx = (float)Math.Cos(angleRad) * (halfLen * 2f / segments);
+            float dy = (float)Math.Sin(angleRad) * (halfLen * 2f / segments);
+            float x0 = cx - (float)Math.Cos(angleRad) * halfLen;
+            float y0 = yCenter - (float)Math.Sin(angleRad) * halfLen;
+
+            for (int i = 0; i < segments; i++)
+            {
+                if (i % 2 == 0)
+                {
+                    float segX = x0 + dx * i;
+                    if (Math.Abs(segX - cx) < 30f && Math.Abs(yCenter - cy) < 20f) continue;
+
+                    DrawOsdLine(new PointF(segX, y0 + dy * i), new SizeF(10f, 2f), White);
+                }
+            }
+        }
+
+        // --- Custom OSD Rendering Helpers ---
+
+        private static void DrawText(string text, PointF pos, float scale, Color c)
+        {
+            // Adding Shadow = true forces GTA UI to draw a 1px black outline/shadow
+            // making it perfectly visible on bright skies without needing a background box.
+            new TextElement(text, pos, scale, c, GTA.UI.Font.ChaletLondon) { Shadow = true }.Draw();
+        }
+
+        private static void DrawOsdLine(PointF pos, SizeF size, Color c)
+        {
+            // Draw slightly larger black background first to act as a hard outline
+            new ContainerElement(new PointF(pos.X - 1f, pos.Y - 1f), new SizeF(size.Width + 2f, size.Height + 2f), Color.Black).Draw();
+            // Draw actual white line
+            new ContainerElement(pos, size, c).Draw();
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\InputDistortion.cs
+using System;
+
+namespace FpvDroneMod
+{
+    // Spec section 8.2: Degraded-stage input distortion (drop + noise).
+    // Single shared RNG keeps draws inexpensive and deterministic-ish.
+    internal static class InputDistortion
+    {
+        private static readonly Random Rng = new Random();
+
+        public static (float dmx, float dmy) Apply(float dmx, float dmy, float I, FlightStage stage)
+        {
+            if (stage == FlightStage.Lost)
+                return (0.0f, 0.0f);
+            if (stage != FlightStage.Degraded)
+                return (dmx, dmy);
+
+            // Drop chance = ((I - 0.50) / 0.35) × 0.40 (clamped).
+            float t = (I - Config.IDegraded) / (Config.ILost - Config.IDegraded);
+            t = t < 0f ? 0f : (t > 1f ? 1f : t);
+            float dropChance = t * Config.MaxDropChance;
+
+            if (Rng.NextDouble() < dropChance)
+            {
+                float kx = (float)Rng.NextDouble() * 0.3f;
+                float ky = (float)Rng.NextDouble() * 0.3f;
+                dmx *= kx;
+                dmy *= ky;
+            }
+
+            // Noise injection.
+            if (Rng.NextDouble() < dropChance * 0.3f)
+            {
+                dmx += ((float)Rng.NextDouble() - 0.5f) * 0.4f;
+                dmy += ((float)Rng.NextDouble() - 0.5f) * 0.2f;
+            }
+
+            return (dmx, dmy);
+        }
+
+        // Frame-rate-correlated input delay is handled coarsely: we keep a tiny
+        // ring buffer of recent samples and look up older ones. This is good
+        // enough for the FPV "input lag" feel without doing full event queues.
+        private const int BufLen = 32;
+        private static readonly (float dmx, float dmy, float t)[] Buf = new (float, float, float)[BufLen];
+        private static int Head;
+        private static float Now;
+
+        public static (float dmx, float dmy) ApplyDelay(float dmx, float dmy, float I, FlightStage stage, float dtReal)
+        {
+            Now += dtReal;
+            Buf[Head] = (dmx, dmy, Now);
+            Head = (Head + 1) % BufLen;
+
+            if (stage != FlightStage.Degraded) return (dmx, dmy);
+
+            float t = (I - Config.IDegraded) / (Config.ILost - Config.IDegraded);
+            t = t < 0f ? 0f : (t > 1f ? 1f : t);
+            float delaySec = (t * Config.MaxInputDelayMs) * 0.001f;
+
+            float target = Now - delaySec;
+            // Walk back from Head-1 to find sample with timestamp closest <= target.
+            for (int i = 1; i <= BufLen; i++)
+            {
+                int idx = (Head - i + BufLen) % BufLen;
+                if (Buf[idx].t <= target) return (Buf[idx].dmx, Buf[idx].dmy);
+            }
+            return (dmx, dmy);
+        }
+
+        public static void Reset()
+        {
+            for (int i = 0; i < BufLen; i++) Buf[i] = (0, 0, 0);
+            Head = 0;
+            Now = 0;
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Log.cs
+using System;
+using System.IO;
+
+namespace FpvDroneMod
+{
+    // Minimal append-only logger so silent catch{} blocks become visible.
+    // Writes to scripts/FpvDroneMod.log alongside the DLL. Failures inside
+    // the logger itself are swallowed (we can't log a logging failure).
+    //
+    // Audit #4 fix: empty catches were "swallowing failures" of TimeScale
+    // restore and camera cleanup. Now the catch blocks at least leave a
+    // trail in the log file that the user/dev can grep through after a
+    // session if something locked up.
+    internal static class Log
+    {
+        private static readonly object _lock = new object();
+        private static string _path;
+
+        public static void Init()
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location)
+                    ?? Directory.GetCurrentDirectory();
+                _path = Path.Combine(dir, "FpvDroneMod.log");
+                // Truncate at start of session so the file doesn't grow
+                // unbounded across many launches.
+                File.WriteAllText(_path,
+                    $"[{DateTime.Now:HH:mm:ss}] FPV Drone Mod log opened\r\n");
+            }
+            catch
+            {
+                _path = null;
+            }
+        }
+
+        public static void Info(string msg)  => Write("INFO ", msg, null);
+        public static void Warn(string msg)  => Write("WARN ", msg, null);
+        public static void Error(string msg, Exception ex = null)
+            => Write("ERROR", msg, ex);
+
+        private static void Write(string level, string msg, Exception ex)
+        {
+            if (_path == null) return;
+            try
+            {
+                lock (_lock)
+                {
+                    string line = $"[{DateTime.Now:HH:mm:ss}] {level} {msg}";
+                    if (ex != null)
+                        line += $" :: {ex.GetType().Name}: {ex.Message}";
+                    File.AppendAllText(_path, line + "\r\n");
+                }
+            }
+            catch
+            {
+                // Logger failures are non-fatal; ignore.
+            }
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Main.cs
+using System;
+using System.Diagnostics;
+using System.Windows.Forms;
+using GTA;
+using GTA.Math;
+using GTA.Native;
+using GTA.UI;
+
+namespace FpvDroneMod
+{
+    // Top-level orchestrator — implements spec section 13 frame loop.
+    //
+    // Hot-path responsibilities:
+    //   1. Detect launch / abort / pause via KeyDown + IsPauseMenuActive.
+    //   2. Run the pre-flight check (PlayerGuard).
+    //   3. Each Tick while flying:
+    //      - block all controls
+    //      - read disabled controls for mouse + keyboard intent
+    //      - update battery, signal, stage
+    //      - apply input distortion
+    //      - integrate physics
+    //      - run a forward raycast (Collision)
+    //      - drive slow-mo state machine if impact imminent
+    //      - update camera + teleport player ped
+    //      - draw HUD + interference overlay
+    //   4. On exit: hand off to PlayerGuard.OnExit + restore camera.
+    public sealed class Main : Script
+    {
+        private DroneState _state;
+        private Camera _fpvCam;
+        private bool _flying;
+        private bool _mouseFirstFrame = true;
+        private bool _lockButtonWasDown;
+        private bool _attackButtonWasDown;
+
+        // Realtime stopwatch — used for slow-mo, lost timer, recovery, etc. so
+        // we don't depend on Game.LastFrameTime which is in game-time and gets
+        // multiplied by TimeScale during slow-mo.
+        private readonly Stopwatch _rt = new Stopwatch();
+        private TimeSpan _rtPrev;
+
+        private SlowMoFinal _slowMo = new SlowMoFinal();
+
+        public Main()
+        {
+            Log.Init();
+            AudioManager.Init();
+            Log.Info("FPV Drone Mod starting up");
+            Tick    += OnTick;
+            KeyDown += OnKeyDown;
+            Aborted += OnAborted;
+            Interval = 0;
+            _rt.Start();
+        }
+
+        // ---- Lifecycle ----
+
+        private void TryStartFlight()
+        {
+            var player = Game.Player;
+            var ped = player.Character;
+            string err = PlayerGuard.PreflightCheck(player, ped);
+            if (err != null)
+            {
+                Notification.PostTicker("FPV: " + err, false, false);
+                return;
+            }
+
+            _state = new DroneState();
+            PlayerGuard.OnEnter(player, ped, _state);
+            InputDistortion.Reset();
+            Natives.SetSeethrough(false);
+            Natives.SetNightvision(false);
+
+#pragma warning disable CS0618 // World.CreateCamera + RenderingCamera deprecated in v3.7 nightly but still functional
+            // Spawn camera looking the same way the player was — so the first
+            // frame doesn't snap-yaw to north.
+            _fpvCam = World.CreateCamera(_state.P,
+                new Vector3(_state.Theta * MathF.Rad2Deg, 0f, _state.Psi * MathF.Rad2Deg),
+                Config.FpvFov);
+            World.RenderingCamera = _fpvCam;
+#pragma warning restore CS0618
+
+            // Seed s.F from the analytical formula. We CANNOT call
+            // _fpvCam.ForwardVector here — the engine hasn't registered the
+            // script camera until the next render frame, and SHVDN's
+            // NativeMemory.GetCameraAddress() returns null → NRE.
+            _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+
+            _mouseFirstFrame = true;
+            _lockButtonWasDown = false;
+            _attackButtonWasDown = false;
+            MouseCapture.Recenter();
+            _flying = true;
+            _state.Spooling     = true;
+            _state.SpoolElapsed = 0f;
+            AudioManager.OnLaunch();
+        }
+
+        private void EndFlight()
+        {
+            if (!_flying) return;
+            AudioManager.OnStop();
+
+            try { _slowMo.ForceAbort(); }
+            catch (Exception ex) { Log.Error("EndFlight: SlowMo.ForceAbort failed", ex); }
+
+            try { Effects.StopAll(); }
+            catch (Exception ex) { Log.Error("EndFlight: Effects.StopAll failed", ex); }
+
+            try
+            {
+                Natives.SetSeethrough(false);
+                Natives.SetNightvision(false);
+            }
+            catch (Exception ex) { Log.Error("EndFlight: Resetting vision modes failed", ex); }
+
+            try
+            {
+#pragma warning disable CS0618
+                World.RenderingCamera = null;
+#pragma warning restore CS0618
+            }
+            catch (Exception ex) { Log.Error("EndFlight: clearing RenderingCamera failed", ex); }
+
+            if (_fpvCam != null && _fpvCam.Exists())
+            {
+                try { _fpvCam.Delete(); }
+                catch (Exception ex) { Log.Error("EndFlight: fpvCam.Delete failed", ex); }
+            }
+            _fpvCam = null;
+
+            // Final defence: Game.TimeScale must always come back to 1.0 so
+            // the player isn't permanently stuck in slow motion.
+            try { Game.TimeScale = 1.0f; }
+            catch (Exception ex) { Log.Error("EndFlight: TimeScale reset failed", ex); }
+
+            try { PlayerGuard.OnExit(Game.Player, Game.Player.Character, _state); }
+            catch (Exception ex) { Log.Error("EndFlight: PlayerGuard.OnExit failed", ex); }
+
+            _flying = false;
+        }
+
+        // ---- Events ----
+
+        private void OnKeyDown(object sender, KeyEventArgs e)
+        {
+            // Settings menu absorbs all input while open. Only allowed to open
+            // from non-flying state — opening it mid-flight would conflict
+            // with the mouse-capture loop.
+            if (Menu.IsOpen)
+            {
+                Menu.OnKey(e.KeyCode);
+                return;
+            }
+            if (e.KeyCode == Keys.F9)
+            {
+                if (!_flying) Menu.Toggle();
+                return;
+            }
+
+            if (e.KeyCode == Keys.G)
+            {
+                if (_flying) EndFlight();
+                else TryStartFlight();
+                return;
+            }
+
+            if (!_flying) return;
+
+            if (e.KeyCode == Keys.J)
+            {
+                // Cycle through visual modes: Normal -> Thermal -> Night Vision -> Normal.
+                _state.Vision = (VisionMode)(((int)_state.Vision + 1) % 3);
+
+                if (_state.Vision == VisionMode.Normal)
+                {
+                    Natives.SetSeethrough(false);
+                    Natives.SetNightvision(false);
+                }
+                else if (_state.Vision == VisionMode.Thermal)
+                {
+                    Natives.SetNightvision(false);
+                    Natives.SetSeethrough(true);
+                }
+                else if (_state.Vision == VisionMode.NightVision)
+                {
+                    Natives.SetSeethrough(false);
+                    Natives.SetNightvision(true);
+                }
+                return;
+            }
+
+            switch (e.KeyCode)
+            {
+                case Keys.H:
+                    EndFlight();
+                    break;
+            }
+        }
+
+        private void OnAborted(object sender, EventArgs e)
+        {
+            // Critical: even on abort, restore world state.
+            Log.Warn("Main.OnAborted called — restoring world state");
+            try { Game.TimeScale = 1.0f; }
+            catch (Exception ex) { Log.Error("Aborted: TimeScale reset failed", ex); }
+            try { _slowMo.ForceAbort(); }
+            catch (Exception ex) { Log.Error("Aborted: SlowMo.ForceAbort failed", ex); }
+            try { Effects.StopAll(); }
+            catch (Exception ex) { Log.Error("Aborted: Effects.StopAll failed", ex); }
+            try { AudioManager.OnStop(); }
+            catch (Exception ex) { Log.Error("Aborted: AudioManager.OnStop failed", ex); }
+            try { EndFlight(); }
+            catch (Exception ex) { Log.Error("Aborted: EndFlight failed", ex); }
+        }
+
+        // ---- Per-frame loop (spec section 13) ----
+
+        private void OnTick(object sender, EventArgs e)
+        {
+            // Realtime delta for timers that must not depend on TimeScale.
+            TimeSpan now = _rt.Elapsed;
+            float dtReal = (float)(now - _rtPrev).TotalSeconds;
+            if (dtReal < 0f) dtReal = 0f;
+            if (dtReal > Config.DtClampMax) dtReal = Config.DtClampMax;
+            _rtPrev = now;
+
+            // Settings menu can be drawn whether we're flying or not. When
+            // open it absorbs all input via OnKeyDown.
+            if (Menu.IsOpen)
+            {
+                // Блокируем все игровые действия, чтобы стрелочки не клацали телефон
+                Natives.DisableAllControlsThisFrame();
+                Menu.Draw();
+                if (!_flying) return;
+            }
+
+            if (!_flying) return;
+
+            // Slow-mo state machine takes priority once started — physics +
+            // input are frozen for the cinematic. Slow-mo is now triggered
+            // only by an actual contact-frame collision (no predictive
+            // slow-down before impact); see Collision.Step.
+            if (_slowMo.Active)
+            {
+                _slowMo.Update(_state);
+                Hud.Draw(_state, Config.FpvFov);
+                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f));
+                if (_slowMo.ReadyForExit) EndFlight();
+                return;
+            }
+
+            // Pause menu — freeze simulation, keep camera, skip input.
+            if (Natives.IsPauseMenuActive() || Game.IsPaused)
+            {
+                Hud.Draw(_state, Config.FpvFov);
+                return;
+            }
+
+            float dtGame = Game.LastFrameTime;
+            if (dtGame > Config.DtClampMax) dtGame = Config.DtClampMax;
+
+            var player = Game.Player;
+            var ped = player.Character;
+
+            // 13.3 Block all 3 control groups.
+            Natives.DisableAllControlsThisFrame();
+
+            // 13.5 Read mouse via Win32 raw cursor delta. The disabled-control
+            // path returns 0 here because the gameplay camera is replaced by a
+            // scripted camera and the engine stops feeding LookLeftRight/UpDown.
+            var (mdx, mdy) = MouseCapture.ReadDelta(ref _mouseFirstFrame);
+            float dmxRaw = mdx / Config.MousePixelsPerUnit;
+            float dmyRaw = mdy / Config.MousePixelsPerUnit;
+
+            // 13.7 Vertical input — read PgUp/PgDn directly via Win32 (works
+            // independently of the GTA control system).
+            float vVert = 0f;
+            if ((NativeKey.GetAsyncKeyState((int)Keys.PageUp) & 0x8000) != 0) vVert += Config.VVertStep;
+            if ((NativeKey.GetAsyncKeyState((int)Keys.PageDown) & 0x8000) != 0) vVert -= Config.VVertStep;
+            if ((NativeKey.GetAsyncKeyState((int)Keys.T) & 0x8000) != 0)
+                Physics.AdjustThrottle(_state, +Config.ThrottleRate * dtGame);
+            if ((NativeKey.GetAsyncKeyState((int)Keys.Y) & 0x8000) != 0)
+                Physics.AdjustThrottle(_state, -Config.ThrottleRate * dtGame);
+
+            // 13.8 Battery
+            Physics.DrainBattery(_state, dtGame);
+            bool batteryDead = _state.B <= 0.0001f;
+            if (batteryDead && _state.MotorsDeadBannerT <= 0f) _state.MotorsDeadBannerT = 0.5f;
+            _state.MotorsDeadBannerT = Math.Max(0f, _state.MotorsDeadBannerT - dtReal);
+            _state.SignalRestoredBannerT = Math.Max(0f, _state.SignalRestoredBannerT - dtReal);
+
+            // 13.1-2 LoS refresh on cadence.
+            _state.LosCheckTimer += dtReal;
+            if (_state.LosCheckTimer >= Config.LosCheckInterval)
+            {
+                Signal.RefreshLineOfSight(_state, ped);
+                _state.LosCheckTimer = 0f;
+            }
+
+            // 13.10-15 Q / I.
+            Signal.ComputeQuality(_state);
+
+            // 13.16-17 Stage transitions.
+            Signal.UpdateStage(_state, dtReal);
+
+            // 13.18-19 Distortion / autonomous mode.
+            (float dmx, float dmy) = (dmxRaw, dmyRaw);
+            (dmx, dmy) = InputDistortion.ApplyDelay(dmx, dmy, _state.I, _state.Stage, dtReal);
+            (dmx, dmy) = InputDistortion.Apply(dmx, dmy, _state.I, _state.Stage);
+            _state.LastDmx = dmx; _state.LastDmy = dmy;
+
+            // Loitering-munition target search: cone scan around the FPV reticle.
+            if (_state.AutopilotMode == AutoPilotState.Off)
+            {
+                _state.PotentialTarget = GetTargetInCrosshair(ped);
+            }
+            else
+            {
+                _state.PotentialTarget = null;
+            }
+
+            // Autopilot controls: RMB toggles lock, LMB starts the terminal attack.
+            bool lockButtonDown = (NativeKey.GetAsyncKeyState(NativeKey.VK_RBUTTON) & 0x8000) != 0;
+            bool attackButtonDown = (NativeKey.GetAsyncKeyState(NativeKey.VK_LBUTTON) & 0x8000) != 0;
+            bool lockPressed = lockButtonDown && !_lockButtonWasDown;
+            bool attackPressed = attackButtonDown && !_attackButtonWasDown;
+            _lockButtonWasDown = lockButtonDown;
+            _attackButtonWasDown = attackButtonDown;
+
+            if (lockPressed)
+            {
+                if (_state.AutopilotMode == AutoPilotState.Off && _state.PotentialTarget != null)
+                {
+                    _state.LockedTarget = _state.PotentialTarget;
+                    _state.AutopilotMode = AutoPilotState.Tracking;
+                    _state.TargetLostTimer = 0f;
+                }
+                else if (_state.AutopilotMode != AutoPilotState.Off)
+                {
+                    _state.AutopilotMode = AutoPilotState.Off;
+                    _state.LockedTarget = null;
+                    _state.TargetLostTimer = 0f;
+                }
+            }
+
+            if (attackPressed && _state.AutopilotMode == AutoPilotState.Tracking)
+            {
+                _state.AutopilotMode = AutoPilotState.Attacking;
+            }
+
+            // 13.20-23 Angular update + roll + forward vector.
+            if (_state.AutopilotMode != AutoPilotState.Off)
+            {
+                Autopilot.Update(_state, dtReal);
+                Physics.UpdateCameraRoll(_state, 0f, dtGame);
+            }
+            else
+            {
+                Physics.ApplyAngularInput(_state, dmx, dmy, dtGame, _state.Stage);
+                Physics.UpdateCameraRoll(_state, dmx, dtGame);
+            }
+
+            // Apply the new orientation to the camera FIRST, then read its
+            // engine-canonical forward vector. This guarantees physics moves
+            // the drone in the exact direction the camera is looking — no
+            // matter which Euler-angle convention SHVDN/GTA actually use.
+            // Reading ForwardVector can NRE on the very first frame (engine
+            // hasn't registered the cam yet) — fall back to analytical.
+            if (_fpvCam != null && _fpvCam.Exists())
+            {
+                _fpvCam.Rotation = new Vector3(
+                    _state.Theta  * MathF.Rad2Deg,
+                    _state.PhiCam * MathF.Rad2Deg,
+                    _state.Psi    * MathF.Rad2Deg);
+                try
+                {
+                    Vector3 fwd = _fpvCam.ForwardVector;
+                    if (fwd.LengthSquared() > 0.5f) _state.F = fwd;
+                    else _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+                }
+                catch
+                {
+                    _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+                }
+            }
+            else
+            {
+                _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+            }
+
+            // 13.24-30 Velocity / position integration. Battery dead → motors
+            // off (T=0), drag mode = dead.
+            // Раскрутка при старте: плавный разгон от 0 до TSpoolUp за TSpoolDuration секунд
+            if (_state.Spooling)
+            {
+                _state.SpoolElapsed += dtReal;
+                float spoolT = Physics.Clamp01(_state.SpoolElapsed / Config.TSpoolDuration);
+                // Квадратичная кривая для плавного нарастания
+                _state.T = spoolT * spoolT * Math.Min(Config.TSpoolUp, global::FpvDroneMod.Settings.CurrentProfile.TMax);
+                if (_state.SpoolElapsed >= Config.TSpoolDuration)
+                {
+                    _state.Spooling    = false;
+                    _state.T           = Math.Min(Config.TSpoolUp, global::FpvDroneMod.Settings.CurrentProfile.TMax);
+                }
+            }
+            if (batteryDead) _state.T = 0f;
+
+            // Capture pre-integration position so the swept collision ray
+            // covers the actual frame's travel — fixes high-speed tunneling
+            // through cars/peds.
+            Vector3 prevP = _state.P;
+            // Симуляция OSD-телеметрии: время полёта и расход ёмкости
+            _state.FlightTimerReal += dtReal;
+            float currentAmps = (_state.T / global::FpvDroneMod.Settings.CurrentProfile.TMax) * 35f;   // ток зависит от газа
+            _state.MahUsed += currentAmps * dtReal / 3.6f;        // А·с → мАч
+            Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
+
+            // NPC reaction: panic, wanted escalation, cop suppressive fire.
+            NpcReaction.Update(_state, ped, player, dtReal);
+
+            // 13.31-33 Swept-volume contact ray (prevP → curP + margin).
+            var (outcome, hit, hitNormal, hitEntity, speed) = Collision.Step(_state, prevP, dtGame, ped);
+            if (outcome == Collision.Outcome.ImpactNow)
+            {
+                // Snap the drone (and therefore the FPV camera) to just
+                // shy of the surface along the actual approach direction
+                // (prevP → hit), not along F — at high speed inertia can
+                // make trajectory diverge from where the camera was
+                // looking. We back off by SnapInset metres so the camera
+                // kisses the texture without poking through.
+                Vector3 approach = hit - prevP;
+                Vector3 approachDir = approach.LengthSquared() > 0.0001f
+                    ? Vector3.Normalize(approach)
+                    : _state.F;
+                // Capture impact speed BEFORE we zero out V so the explosion
+                // and vehicle-impulse can scale by how hard we actually hit.
+                float impactSpeed = _state.V.Length();
+                Vector3 impactVelocity = _state.V;
+
+                // Capture pre-snap camera position so SlowMoFinal can start
+                // its cinematic interpolation from where the player was
+                // *actually* looking the frame before impact, instead of
+                // from the snapped-to-wall position. Without this the
+                // first slow-mo frame shows the texture in the player's
+                // face and then the camera "rubber-bands" backward — felt
+                // like a glitch.
+                Vector3 fpvCamPrePos = (_fpvCam != null && _fpvCam.Exists())
+                    ? _fpvCam.Position
+                    : _state.P;
+
+                _state.P = hit - approachDir * Config.SnapInset;
+                _state.V = Vector3.Zero;
+                if (_fpvCam != null && _fpvCam.Exists())
+                    _fpvCam.Position = _state.P;
+
+                _state.ImpactImminent = true;
+                Collision.ApplyKineticImpactImpulse(hitEntity, hit, hitNormal, impactVelocity);
+                AudioManager.OnCrash();
+                _slowMo.Begin(_state, _fpvCam, hit, approachDir, impactSpeed,
+                              fpvCamPrePos, ped);
+                return;
+            }
+
+            // 13.34 Emergency boundary check.
+            float d = (_state.P - _state.Spawn).Length();
+            float dMax = _state.LoS ? Config.DMaxField : Config.DMaxCity;
+            if (d > dMax + Config.EmergencyOverDMax)
+            {
+                // Emergency detonation past D_max — no real impact, so use
+                // the drone's own velocity direction as approachDir fallback.
+                Vector3 emerDir = _state.V.LengthSquared() > 0.001f
+                    ? Vector3.Normalize(_state.V)
+                    : _state.F;
+                Collision.Detonate(_state.P, emerDir, speed);
+                EndFlight();
+                return;
+            }
+
+            // 13.36 Teleport player ped to drone position (no offset).
+            Natives.SetEntityCoordsNoOffset(ped, _state.P);
+            Natives.SetEntityHeading(ped, _state.Psi * MathF.Rad2Deg);
+            Natives.SetRadarAsExteriorThisFrame();
+
+            // 13.37 Camera position update — rotation was already applied
+            // above so we could read the canonical forward vector.
+            if (_fpvCam != null && _fpvCam.Exists())
+                _fpvCam.Position = _state.P;
+
+            // 13.38 Аудио-движок дрона
+            AudioManager.Update(_state);
+
+            // 13.39 Interference effects.
+            Effects.Update(_state.I);
+            Effects.DrawOverlays(_state.I);
+
+            // 13.40 HUD.
+            Hud.Draw(_state, Config.FpvFov);
+        }
+
+        private Entity GetTargetInCrosshair(Ped playerPed)
+        {
+            try
+            {
+                Vector3 start = _state.P;
+                Vector3 end = start + (_state.F * 500f);
+
+                var ray = World.Raycast(
+                    start,
+                    end,
+                    IntersectFlags.Vehicles | IntersectFlags.Peds,
+                    playerPed
+                );
+
+                if (!ray.DidHit)
+                    return null;
+
+                Entity ent = ray.HitEntity;
+
+                if (ent == null || !ent.Exists())
+                    return null;
+
+                if (!(ent is Vehicle) && !(ent is Ped))
+                    return null;
+
+                if (ent.Handle == playerPed.Handle)
+                    return null;
+
+                return ent;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("GetTargetInCrosshair failed", ex);
+                return null;
+            }
+        }
+    }
+
+    // Direct Win32 keystate access for keys that don't have stable Control
+    // mappings (e.g. PageUp/PageDown). SHVDN's KeyDown event handles momentary
+    // presses, but for held-down vertical movement we want polled state.
+    internal static class NativeKey
+    {
+        public const int VK_LBUTTON = 0x01;
+        public const int VK_RBUTTON = 0x02;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern short GetAsyncKeyState(int vKey);
+    }
+
+    // Raw mouse-delta capture. We can't use GET_DISABLED_CONTROL_NORMAL for
+    // LookLeftRight/LookUpDown because the gameplay camera is replaced by a
+    // scripted camera (World.RenderingCamera) and the engine stops feeding
+    // those controls. Instead we sample the OS cursor every frame and snap it
+    // back to screen centre so we always read a true delta.
+    internal static class MouseCapture
+    {
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        public struct Win32Point { public int X; public int Y; }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool GetCursorPos(out Win32Point lpPoint);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        public static int CenterX => System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width  / 2;
+        public static int CenterY => System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height / 2;
+
+        // Returns (dx, dy) in pixels since last call, then snaps cursor back
+        // to screen centre. The first call after Reset() returns (0, 0) so the
+        // initial cursor position doesn't get interpreted as a giant flick.
+        public static (int dx, int dy) ReadDelta(ref bool firstFrame)
+        {
+            int cx = CenterX;
+            int cy = CenterY;
+            Win32Point p;
+            GetCursorPos(out p);
+            int dx = p.X - cx;
+            int dy = p.Y - cy;
+            SetCursorPos(cx, cy);
+            if (firstFrame) { firstFrame = false; dx = 0; dy = 0; }
+            return (dx, dy);
+        }
+
+        public static void Recenter() { SetCursorPos(CenterX, CenterY); }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Menu.cs
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+using GTA.UI;
+using Font = GTA.UI.Font;
+
+namespace FpvDroneMod
+{
+    internal static class Menu
+    {
+        private enum MenuState
+        {
+            CategoryView,
+            PayloadView
+        }
+
+        private static bool _open;
+        private static MenuState _state = MenuState.CategoryView;
+        private static int _currentCategoryIndex;
+        private static int _currentPayloadIndex;
+
+        public static bool IsOpen => _open;
+
+        public static void Toggle()
+        {
+            _open = !_open;
+            if (_open)
+            {
+                _state = MenuState.CategoryView;
+                _currentCategoryIndex = -3;
+                _currentPayloadIndex = 0;
+
+                // Если телефон открыт - закрываем его нафиг
+                Natives.CloseCellPhone();
+            }
+        }
+
+        public static void Close() { _open = false; }
+
+        // Returns true if this menu consumed the key (caller should not run
+        // its own handlers).
+        public static bool OnKey(Keys key)
+        {
+            if (!_open) return false;
+
+            switch (key)
+            {
+                case Keys.Up:
+                    if (_state == MenuState.CategoryView)
+                    {
+                        _currentCategoryIndex--;
+                        if (_currentCategoryIndex < -4)
+                            _currentCategoryIndex = Settings.Categories.Length - 1;
+                    }
+                    else
+                    {
+                        var presets = Settings.Categories[_currentCategoryIndex].Presets;
+                        _currentPayloadIndex = (_currentPayloadIndex - 1 + presets.Length) % presets.Length;
+                    }
+                    return true;
+
+                case Keys.Down:
+                    if (_state == MenuState.CategoryView)
+                    {
+                        _currentCategoryIndex++;
+                        if (_currentCategoryIndex >= Settings.Categories.Length)
+                            _currentCategoryIndex = -4;
+                    }
+                    else
+                    {
+                        var presets = Settings.Categories[_currentCategoryIndex].Presets;
+                        _currentPayloadIndex = (_currentPayloadIndex + 1) % presets.Length;
+                    }
+                    return true;
+
+                case Keys.Enter:
+                    if (_state == MenuState.CategoryView)
+                    {
+                        if (_currentCategoryIndex == -4)
+                        {
+                            Settings.ActiveProfileIndex = (Settings.ActiveProfileIndex + 1) % Settings.DroneProfiles.Length;
+                        }
+                        else if (_currentCategoryIndex == -3)
+                        {
+                            int impulseIdx = Settings.ImpulseScaleIndex;
+                            if (impulseIdx < 0) impulseIdx = 0;
+                            if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
+                            Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulsePresets.Length;
+                        }
+                        else if (_currentCategoryIndex == -2)
+                        {
+                            Settings.GiveStars = !Settings.GiveStars;
+                        }
+                        else if (_currentCategoryIndex == -1)
+                        {
+                            Settings.DamageOverrideIndex = (Settings.DamageOverrideIndex + 1) % Settings.DamageValues.Length;
+                        }
+                        else
+                        {
+                            _state = MenuState.PayloadView;
+                            _currentPayloadIndex = 0;
+                        }
+                    }
+                    else
+                    {
+                        var selected = Settings.Categories[_currentCategoryIndex].Presets[_currentPayloadIndex];
+                        Settings.ActivePayload = selected;
+                        _state = MenuState.CategoryView;
+                    }
+                    return true;
+
+                case Keys.Left:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -4)
+                    {
+                        Settings.ActiveProfileIndex--;
+                        if (Settings.ActiveProfileIndex < 0)
+                            Settings.ActiveProfileIndex = Settings.DroneProfiles.Length - 1;
+                        return true;
+                    }
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -3)
+                    {
+                        int impulseIdx = Settings.ImpulseScaleIndex;
+                        if (impulseIdx < 0) impulseIdx = 0;
+                        if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
+                        impulseIdx--;
+                        if (impulseIdx < 0) impulseIdx = Settings.ImpulsePresets.Length - 1;
+                        Settings.ImpulseScaleIndex = impulseIdx;
+                        return true;
+                    }
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
+                    {
+                        Settings.DamageOverrideIndex--;
+                        if (Settings.DamageOverrideIndex < 0)
+                            Settings.DamageOverrideIndex = Settings.DamageValues.Length - 1;
+                        return true;
+                    }
+                    return false;
+
+                case Keys.Right:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -4)
+                    {
+                        Settings.ActiveProfileIndex = (Settings.ActiveProfileIndex + 1) % Settings.DroneProfiles.Length;
+                        return true;
+                    }
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -3)
+                    {
+                        int impulseIdx = Settings.ImpulseScaleIndex;
+                        if (impulseIdx < 0) impulseIdx = 0;
+                        if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
+                        Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulsePresets.Length;
+                        return true;
+                    }
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
+                    {
+                        Settings.DamageOverrideIndex = (Settings.DamageOverrideIndex + 1) % Settings.DamageValues.Length;
+                        return true;
+                    }
+                    return false;
+
+                case Keys.Back:
+                    if (_state == MenuState.PayloadView)
+                        _state = MenuState.CategoryView;
+                    else
+                        Close();
+                    return true;
+
+                case Keys.Escape:
+                case Keys.F9:
+                    Close();
+                    return true;
+            }
+
+            return false;
+        }
+
+        public static void Draw()
+        {
+            if (!_open) return;
+
+            float W = GTA.UI.Screen.Width;
+            float H = GTA.UI.Screen.Height;
+
+            const float menuW = 500f;
+            const float headerH = 28f;
+            const float rowH = 22f;
+            const float padBot = 10f;
+
+            int rows = _state == MenuState.CategoryView
+                ? Settings.Categories.Length + 4
+                : Settings.Categories[_currentCategoryIndex].Presets.Length;
+
+            float menuH = headerH + rows * rowH + padBot;
+            float x = (W - menuW) / 2f;
+            float y = (H - menuH) / 2f;
+
+            new ContainerElement(new PointF(x, y), new SizeF(menuW, headerH),
+                Color.FromArgb(220, 60, 100, 60)).Draw();
+            new ContainerElement(new PointF(x, y + headerH),
+                new SizeF(menuW, menuH - headerH),
+                Color.FromArgb(200, 0, 0, 0)).Draw();
+
+            new TextElement("FPV Drone — Полезная нагрузка дрона",
+                new PointF(x + 10, y + 5), 0.42f,
+                Color.White, Font.ChaletLondon).Draw();
+
+            if (_state == MenuState.CategoryView)
+            {
+                float forceY = y + headerH + 4f;
+                bool forceSelected = _currentCategoryIndex == -3;
+                Color forceColor = forceSelected ? Color.Black : Color.White;
+
+                if (forceSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, forceY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                int impulseIdx = Settings.ImpulseScaleIndex;
+                if (impulseIdx < 0) impulseIdx = 0;
+                if (impulseIdx >= Settings.ImpulsePresets.Length) impulseIdx = Settings.ImpulsePresets.Length - 1;
+
+                new TextElement("FORCE (IMPULSE)",
+                    new PointF(x + 10f, forceY), 0.38f,
+                    forceColor, Font.ChaletLondon).Draw();
+
+                new TextElement($"<  {Settings.ImpulsePresets[impulseIdx].Label}  >",
+                    new PointF(x + 290f, forceY), 0.38f,
+                    forceColor, Font.ChaletLondon).Draw();
+
+                float starsRowY = forceY + rowH;
+                bool starsSelected = _currentCategoryIndex == -2;
+                Color starsColor = starsSelected ? Color.Black : Color.White;
+
+                if (starsSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, starsRowY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                new TextElement("WANTED STARS",
+                    new PointF(x + 10f, starsRowY), 0.38f,
+                    starsColor, Font.ChaletLondon).Draw();
+
+                string starsValue = Settings.GiveStars ? "ENABLED" : "DISABLED";
+                new TextElement($"<  {starsValue}  >",
+                    new PointF(x + 290f, starsRowY), 0.38f,
+                    starsColor, Font.ChaletLondon).Draw();
+
+                float damageY = starsRowY + rowH;
+                bool damageSelected = _currentCategoryIndex == -1;
+                Color damageColor = damageSelected ? Color.Black : Color.White;
+
+                if (damageSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, damageY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                int dmgIdx = Settings.DamageOverrideIndex;
+                if (dmgIdx < 0) dmgIdx = 0;
+                if (dmgIdx >= Settings.DamageValues.Length) dmgIdx = Settings.DamageValues.Length - 1;
+                float hpValue = Settings.DamageValues[dmgIdx];
+
+                new TextElement("DAMAGE (HP)",
+                    new PointF(x + 10f, damageY), 0.38f,
+                    damageColor, Font.ChaletLondon).Draw();
+                new TextElement($"<  {hpValue:0}  >",
+                    new PointF(x + 290f, damageY), 0.38f,
+                    damageColor, Font.ChaletLondon).Draw();
+
+                // ── DRONE CLASS ──────────────────────────────────────────────
+                float classY = damageY + rowH;
+                bool classSelected = _currentCategoryIndex == -4;
+                Color classColor = classSelected ? Color.Black : Color.White;
+
+                if (classSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, classY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                var prof = Settings.CurrentProfile;
+                int speedKph = (int)Math.Round(prof.TMax * 3.6f);
+
+                new TextElement("DRONE CLASS",
+                    new PointF(x + 10f, classY), 0.38f,
+                    classColor, Font.ChaletLondon).Draw();
+                new TextElement($"<  {prof.Label}  ({speedKph} KPH)  >",
+                    new PointF(x + 180f, classY), 0.38f,
+                    classColor, Font.ChaletLondon).Draw();
+
+                for (int i = 0; i < Settings.Categories.Length; i++)
+                {
+                    float ry = y + headerH + 4f + (i + 4) * rowH;
+                    Color textColor = i == _currentCategoryIndex ? Color.Black : Color.White;
+
+                    if (i == _currentCategoryIndex)
+                    {
+                        new ContainerElement(
+                            new PointF(x, ry - 2f),
+                            new SizeF(menuW, rowH),
+                            Color.FromArgb(180, 100, 180, 100)).Draw();
+                    }
+
+                    new TextElement(Settings.Categories[i].Name,
+                        new PointF(x + 10f, ry), 0.38f,
+                        textColor, Font.ChaletLondon).Draw();
+                }
+            }
+            else
+            {
+                var category = Settings.Categories[_currentCategoryIndex];
+                for (int i = 0; i < category.Presets.Length; i++)
+                {
+                    float ry = y + headerH + 4f + i * rowH;
+                    bool isSelected = i == _currentPayloadIndex;
+                    var preset = category.Presets[i];
+                    bool isActive = preset.Id == Settings.CurrentExplosionId
+                                    && preset.Name == Settings.CurrentExplosionName;
+
+                    Color textColor = isSelected ? Color.Black : Color.White;
+                    if (isSelected)
+                    {
+                        new ContainerElement(
+                            new PointF(x, ry - 2f),
+                            new SizeF(menuW, rowH),
+                            Color.FromArgb(180, 100, 180, 100)).Draw();
+                    }
+
+                    string suffix = isActive ? " [Выбрано]" : string.Empty;
+                    new TextElement($"{preset.Name} (id {preset.Id}){suffix}",
+                        new PointF(x + 10f, ry), 0.36f,
+                        textColor, Font.ChaletLondon).Draw();
+                }
+            }
+
+            new TextElement(
+                "[Вверх/Вниз] Выбор   [Enter] Подтвердить   [Backspace] Назад   [F9/Esc] Закрыть",
+                new PointF(x + 10f, y + menuH + 4f),
+                0.30f, Color.LightGray, Font.ChaletLondon).Draw();
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Natives.cs
+using GTA;
+using GTA.Math;
+using GTA.Native;
+
+namespace FpvDroneMod
+{
+    // Thin wrappers for natives we use that aren't covered by the SHVDN3 wrapper
+    // surface in a convenient way. Keeps Main.cs readable.
+    internal static class Natives
+    {
+        public static void SetEntityCoordsNoOffset(Entity e, Vector3 pos)
+        {
+            Function.Call(Hash.SET_ENTITY_COORDS_NO_OFFSET, e.Handle,
+                pos.X, pos.Y, pos.Z, false, false, false);
+        }
+
+        public static void SetEntityHeading(Entity e, float headingDeg)
+        {
+            Function.Call(Hash.SET_ENTITY_HEADING, e.Handle, headingDeg);
+        }
+
+        public static void SetEntityCollision(Entity e, bool toggle, bool keepPhysics)
+        {
+            Function.Call(Hash.SET_ENTITY_COLLISION, e.Handle, toggle, keepPhysics);
+        }
+
+        public static void SetEntityInvincible(Entity e, bool toggle)
+        {
+            Function.Call(Hash.SET_ENTITY_INVINCIBLE, e.Handle, toggle);
+        }
+
+        public static void SetEntityAlpha(Entity e, int alpha, bool skin)
+        {
+            Function.Call(Hash.SET_ENTITY_ALPHA, e.Handle, alpha, skin);
+        }
+
+        public static void ResetEntityAlpha(Entity e)
+        {
+            Function.Call(Hash.RESET_ENTITY_ALPHA, e.Handle);
+        }
+
+        public static void SetPedCanRagdoll(Ped p, bool toggle)
+        {
+            Function.Call(Hash.SET_PED_CAN_RAGDOLL, p.Handle, toggle);
+        }
+
+        public static void SetPlayerInvincible(Player pl, bool toggle)
+        {
+            Function.Call(Hash.SET_PLAYER_INVINCIBLE, pl.Handle, toggle);
+        }
+
+        public static void SetWantedLevelMultiplier(float v)
+        {
+            Function.Call(Hash.SET_WANTED_LEVEL_MULTIPLIER, v);
+        }
+
+        public static void ClearPlayerWantedLevel(Player pl)
+        {
+            Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, pl.Handle);
+        }
+
+        public static void SetPlayerWantedLevel(Player pl, int level, bool delayedResponse)
+        {
+            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, pl.Handle, level, delayedResponse);
+            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, pl.Handle, false);
+        }
+
+        public static int GetWantedLevel(Player pl)
+        {
+            return Function.Call<int>(Hash.GET_PLAYER_WANTED_LEVEL, pl.Handle);
+        }
+
+        public static void TaskShootAtCoord(Ped p, Vector3 pos, int durationMs, uint firingPattern)
+        {
+            Function.Call(Hash.TASK_SHOOT_AT_COORD,
+                p.Handle, pos.X, pos.Y, pos.Z, durationMs, firingPattern);
+        }
+
+        public static void TaskReactAndFlee(Ped p, Ped target)
+        {
+            Function.Call(Hash.TASK_REACT_AND_FLEE_PED, p.Handle, target.Handle);
+        }
+
+        public static bool IsPedACop(Ped p)
+        {
+            PedType type = p.PedType;
+            return type == PedType.Cop || type == PedType.Swat || type == PedType.Army;
+        }
+
+        public static Ped GetClosestPed(Vector3 position, float radius)
+        {
+            return GetClosestPedByType(position, radius, -1);
+        }
+
+        public static Ped GetClosestCop(Vector3 position, float radius)
+        {
+            return GetClosestPedByType(position, radius, (int)PedType.Cop);
+        }
+
+        private static Ped GetClosestPedByType(Vector3 position, float radius, int pedType)
+        {
+            var outPed = new OutputArgument();
+            bool found = Function.Call<bool>(Hash.GET_CLOSEST_PED,
+                position.X, position.Y, position.Z, radius,
+                true, true, outPed, false, false, pedType);
+            if (!found) return null;
+
+            int handle = outPed.GetResult<int>();
+            if (handle == 0) return null;
+            return Entity.FromHandle(handle) as Ped;
+        }
+
+        public static void SetRadarAsExteriorThisFrame()
+        {
+            Function.Call(Hash.SET_RADAR_AS_EXTERIOR_THIS_FRAME);
+        }
+
+        public static bool IsCutscenePlaying()
+        {
+            return Function.Call<bool>(Hash.IS_CUTSCENE_PLAYING);
+        }
+
+        public static bool IsPedSwimming(Ped p)
+        {
+            return Function.Call<bool>(Hash.IS_PED_SWIMMING, p.Handle);
+        }
+
+        public static bool IsPedRagdoll(Ped p)
+        {
+            return Function.Call<bool>(Hash.IS_PED_RAGDOLL, p.Handle);
+        }
+
+        public static bool IsPauseMenuActive()
+        {
+            return Function.Call<bool>(Hash.IS_PAUSE_MENU_ACTIVE);
+        }
+
+        public static void SetSeethrough(bool toggle)
+        {
+            Function.Call(Hash.SET_SEETHROUGH, toggle);
+        }
+
+        public static void SetNightvision(bool toggle)
+        {
+            Function.Call(Hash.SET_NIGHTVISION, toggle);
+        }
+
+        public static void DisableAllControlsThisFrame()
+        {
+            // Block all three control groups for safety (spec M5).
+            Function.Call(Hash.DISABLE_ALL_CONTROL_ACTIONS, 0);
+            Function.Call(Hash.DISABLE_ALL_CONTROL_ACTIONS, 1);
+            Function.Call(Hash.DISABLE_ALL_CONTROL_ACTIONS, 2);
+        }
+
+        // Проверка, открыт ли телефон
+        public static bool IsCellPhoneUp()
+        {
+            return Function.Call<bool>(Hash.IS_PED_RUNNING_MOBILE_PHONE_TASK, Game.Player.Character.Handle);
+        }
+
+        // Принудительное закрытие телефона
+        public static void CloseCellPhone()
+        {
+            Function.Call(Hash.TERMINATE_ALL_SCRIPTS_WITH_THIS_NAME, "cellphone_flashhand");
+            Function.Call(Hash.TERMINATE_ALL_SCRIPTS_WITH_THIS_NAME, "cellphone_controller");
+        }
+
+        public static float GetDisabledControlNormal(int group, int control)
+        {
+            return Function.Call<float>(Hash.GET_DISABLED_CONTROL_NORMAL, group, control);
+        }
+
+        public static bool GetScreenCoordFromWorldCoord(Vector3 worldPos, out float screenX, out float screenY)
+        {
+            // GET_SCREEN_COORD_FROM_WORLD_COORD returns normalized 0..1 X/Y coordinates.
+            var x = new OutputArgument();
+            var y = new OutputArgument();
+            bool visible = Function.Call<bool>(Hash.GET_SCREEN_COORD_FROM_WORLD_COORD,
+                worldPos.X, worldPos.Y, worldPos.Z, x, y);
+            screenX = x.GetResult<float>();
+            screenY = y.GetResult<float>();
+            return visible;
+        }
+
+        // 11.1 ANIMPOSTFX — discrete on/off (M2). No intensity native.
+        public static void AnimpostfxPlay(string name, int duration, bool looped)
+        {
+            Function.Call(Hash.ANIMPOSTFX_PLAY, name, duration, looped);
+        }
+
+        public static void AnimpostfxStop(string name)
+        {
+            Function.Call(Hash.ANIMPOSTFX_STOP, name);
+        }
+
+        public static void AnimpostfxStopAll()
+        {
+            Function.Call(Hash.ANIMPOSTFX_STOP_ALL);
+        }
+
+        public static bool AnimpostfxIsRunning(string name)
+        {
+            return Function.Call<bool>(Hash.ANIMPOSTFX_IS_RUNNING, name);
+        }
+
+        public static void AddExplosionUnowned(Vector3 pos, int explosionType, float damageScale, bool audible, bool invisible, float cameraShake)
+        {
+            // ADD_EXPLOSION (no owner) — doesn't attribute to any ped, so no
+            // wanted level applied to the player. (Spec A4.)
+            Function.Call(Hash.ADD_EXPLOSION,
+                pos.X, pos.Y, pos.Z,
+                explosionType, damageScale, audible, invisible, cameraShake);
+        }
+
+        public static void AddOwnedExplosion(Entity owner, Vector3 pos, int explosionType, float damageScale, bool audible, bool invisible, float cameraShake)
+        {
+            if (owner == null || !owner.Exists())
+            {
+                AddExplosionUnowned(pos, explosionType, damageScale, audible, invisible, cameraShake);
+                return;
+            }
+
+            // ADD_OWNED_EXPLOSION attributes the blast to the owner entity.
+            // This lets cops/civilians react to the player as the source.
+            Function.Call(Hash.ADD_OWNED_EXPLOSION,
+                owner.Handle,
+                pos.X, pos.Y, pos.Z,
+                explosionType, damageScale, audible, invisible, cameraShake);
+        }
+
+        // APPLY_FORCE_TO_ENTITY — Battlefield-style impulse on nearby
+        // vehicles after detonation. forceType=1 = impulse-change-by-direction.
+        //   force        — in WORLD space (isDirectionRel=false, isForceRel=false).
+        //   localOffset  — point of application in the entity's LOCAL space
+        //                  (computed via GetOffsetFromEntityGivenWorldCoords).
+        //                  Non-zero offset is what gives the engine torque so
+        //                  vehicles actually rotate/flip instead of just sliding.
+        public static void ApplyForceToEntity(Entity e, Vector3 force, Vector3 localOffset, int forceType)
+        {
+            Function.Call(Hash.APPLY_FORCE_TO_ENTITY,
+                e.Handle, forceType,
+                force.X, force.Y, force.Z,
+                localOffset.X, localOffset.Y, localOffset.Z,
+                0,           // boneIndex
+                false,       // isDirectionRel — force vector is world-space
+                false,       // ignoreUpVec
+                false,       // isForceRel — force vector is world-space
+                false,       // p12
+                true);       // p13
+        }
+
+        // GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS — converts a world-space
+        // point to the entity's local-space offset. Required for properly
+        // applying torque-generating force at the impact point.
+        public static Vector3 GetOffsetFromEntityGivenWorldCoords(Entity e, Vector3 worldPos)
+        {
+            return Function.Call<Vector3>(Hash.GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS,
+                e.Handle, worldPos.X, worldPos.Y, worldPos.Z);
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\NpcReaction.cs
+using System;
+using GTA;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    // Spec: NPC reaction to drone presence.
+    //
+    // Three behaviours:
+    //   A. Nearby pedestrians flee when drone is low and throttle is high.
+    //   B. Hovering over a ped for > NpcWarnTime seconds adds a wanted star.
+    //   C. Armed cops with line-of-sight to the drone shoot at its position
+    //      (visual only — hits are not registered; player ped is invincible).
+    internal static class NpcReaction
+    {
+        // Tuning constants
+        private const float PanicAltitude    = 10f;   // м — макс. высота AGL для паники
+        private const float PanicRadius      = 15f;   // м — радиус поиска пешеходов
+        private const float PanicMinThrottle = 8f;    // м/с — мин. газ для звука пропеллеров
+        private const float PanicCooldownSec = 1.2f;  // сек — антиспам вызовов TASK_REACT
+        private const float NpcWarnTime      = 4.0f;  // сек — зависание → +1 звезда
+        private const float CopShootRadius   = 60f;   // м — радиус поиска копов
+        private const float CopShootInterval = 0.12f; // сек — кадение команды стрельбы
+        private const int   CopShootDuration = 2500;  // мс — длительность одной команды
+        // 0xC6EE5C40 = FIRING_PATTERN_BURST_FIRE (стреляет короткими очередями)
+        private const uint  CopFiringPattern  = 0xC6EE5C40;
+
+        private static readonly Ped[] NoPeds = new Ped[0];
+
+        public static void Update(DroneState s, Ped playerPed, Player player, float dtReal)
+        {
+            float altAgl = GetAltAgl(s.P);
+
+            UpdatePanicAndWanted(s, playerPed, player, altAgl, dtReal);
+            UpdateCopShoot(s, playerPed, altAgl, dtReal);
+        }
+
+        // A + B: паника пешеходов и рост розыска
+        private static void UpdatePanicAndWanted(
+            DroneState s, Ped playerPed, Player player, float altAgl, float dtReal)
+        {
+            s.PanicCooldown = Math.Max(0f, s.PanicCooldown - dtReal);
+
+            // Паника только при низком полёте и работающих пропеллерах
+            bool lowAndLoud = altAgl < PanicAltitude && s.T >= PanicMinThrottle;
+            if (!lowAndLoud)
+            {
+                s.NpcHoverTimer = 0f;
+                return;
+            }
+
+            Ped[] nearby = GetNearbyPedsSafe(s.P, PanicRadius, wantCops: false);
+            if (nearby == null || nearby.Length == 0)
+            {
+                s.NpcHoverTimer = 0f;
+                return;
+            }
+
+            bool anyClose = false;
+            foreach (var p in nearby)
+            {
+                if (p == null || !p.Exists() || p == playerPed) continue;
+                if (Natives.IsPedACop(p)) continue; // копов не пугаем — они стреляют
+
+                anyClose = true;
+
+                // Вызываем TASK_REACT_AND_FLEE_PED с антиспамом
+                if (s.PanicCooldown <= 0f)
+                {
+                    Natives.TaskReactAndFlee(p, playerPed);
+                }
+            }
+
+            if (s.PanicCooldown <= 0f && anyClose)
+                s.PanicCooldown = PanicCooldownSec;
+
+            // Таймер зависания над людьми → розыск
+            if (anyClose)
+            {
+                s.NpcHoverTimer += dtReal;
+                if (s.NpcHoverTimer >= NpcWarnTime && Settings.GiveStars)
+                {
+                    int current = Natives.GetWantedLevel(player);
+                    if (current < 2)
+                        Natives.SetPlayerWantedLevel(player, current + 1, false);
+                    s.NpcHoverTimer = 0f; // сбросить, чтобы не спамить звёздами
+                }
+            }
+            else
+            {
+                s.NpcHoverTimer = Math.Max(0f, s.NpcHoverTimer - dtReal);
+            }
+        }
+
+        // C: вооружённые копы стреляют в дрон
+        private static void UpdateCopShoot(DroneState s, Ped playerPed, float altAgl, float dtReal)
+        {
+            s.CopShootTimer = Math.Max(0f, s.CopShootTimer - dtReal);
+            if (s.CopShootTimer > 0f) return;
+
+            // Стрельба только если есть розыск
+            if (Natives.GetWantedLevel(Game.Player) == 0) return;
+
+            Ped[] nearby = GetNearbyPedsSafe(s.P, CopShootRadius, wantCops: true);
+            if (nearby == null) return;
+
+            foreach (var p in nearby)
+            {
+                if (p == null || !p.Exists() || p == playerPed) continue;
+                if (!Natives.IsPedACop(p)) continue;
+
+                // Проверяем прямую видимость копа до дрона
+                var ray = World.Raycast(p.Position + new Vector3(0, 0, 1f), s.P,
+                                        IntersectFlags.Map | IntersectFlags.Objects, playerPed);
+                if (ray.DidHit) continue; // геометрия заблокировала — коп не видит дрон
+
+                Natives.TaskShootAtCoord(p, s.P, CopShootDuration, CopFiringPattern);
+            }
+
+            s.CopShootTimer = CopShootInterval;
+        }
+
+        private static Ped[] GetNearbyPedsSafe(Vector3 position, float radius, bool wantCops)
+        {
+            try
+            {
+                Ped ped = wantCops
+                    ? Natives.GetClosestCop(position, radius)
+                    : Natives.GetClosestPed(position, radius);
+
+                return ped == null ? NoPeds : new[] { ped };
+            }
+            catch
+            {
+                // NPC reactions are non-critical. Avoid SHVDN World.GetNearbyPeds
+                // here because some SHVDN/game builds can throw inside
+                // NativeMemory.FwScriptGuidPoolTask before managed filtering gets
+                // a chance to recover, aborting the whole drone script.
+                return NoPeds;
+            }
+        }
+
+        private static float GetAltAgl(Vector3 p)
+        {
+            float groundZ;
+            if (!World.GetGroundHeight(p, out groundZ, GetGroundHeightMode.Normal))
+                groundZ = p.Z;
+            return Math.Max(0f, p.Z - groundZ);
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Physics.cs
+using System;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    // Spec sections 4 (physics), 6 (battery).
+    // Pure functions over DroneState; no engine calls.
+    internal static class Physics
+    {
+        // Analytical fallback for the camera's forward vector. Used as the
+        // first-frame seed (engine hasn't registered the script camera yet,
+        // so Camera.ForwardVector NREs in NativeMemory.GetCameraAddress) and
+        // as a try/catch fallback if reading from the camera ever fails.
+        //
+        // Convention: psi is GTA-heading-style (CCW from +Y north when viewed
+        // from above), theta is pitch where +theta = nose up. Matching GTA's
+        // Camera.Rotation = (pitchDeg, rollDeg, yawDeg) basis:
+        //
+        //   pitch=0, yaw=0   -> (0, 1, 0)         north
+        //   pitch=0, yaw=90  -> (-1, 0, 0)        west   (CCW)
+        //   pitch=+90        -> (0, 0, 1)         straight up
+        //   pitch=-90        -> (0, 0, -1)        straight down
+        public static Vector3 ForwardFromYawPitch(float psi, float theta)
+        {
+            float sp = (float)Math.Sin(psi);
+            float cp = (float)Math.Cos(psi);
+            float st = (float)Math.Sin(theta);
+            float ct = (float)Math.Cos(theta);
+            return new Vector3(-sp * ct, cp * ct, st);
+        }
+
+        public static float Lerp(float a, float b, float k) => a + (b - a) * Clamp01(k);
+
+        public static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+
+        public static float Clamp(float v, float lo, float hi)
+            => v < lo ? lo : (v > hi ? hi : v);
+
+        // 4.1 Yaw / pitch — frame-rate independent (multiplied by dt*60).
+        // Sign convention (FPS-natural):
+        //   dmx > 0 (mouse moved right) → drone yaws RIGHT (looks east-ish from
+        //   north). Since GTA's heading angle is CCW from north, "yaw right"
+        //   means the heading angle DECREASES, hence the leading minus sign.
+        //   dmy > 0 (mouse moved down)  → nose drops, θ decreases.
+        public static void ApplyAngularInput(DroneState s, float dmx, float dmy, float dt, FlightStage stage)
+        {
+            var prof = Settings.CurrentProfile;
+            float scale = dt * 60.0f;
+            float psiRate = -dmx * prof.SYaw * scale;
+            s.Psi += psiRate;
+            s.LastPsiRate = psiRate;
+
+            float dTheta = -dmy * prof.SPitch * scale;
+            s.Theta = Clamp(s.Theta + dTheta, -prof.ThetaMax, prof.ThetaMax);
+
+            // Optional angle-mode style auto-level when pitch input is idle.
+            // Disabled by default (AutoLevelStrength = 0) for camera-aim control.
+            if (stage == FlightStage.Controlled &&
+                Math.Abs(dmy) < Config.AutoLevelInputDeadzone &&
+                Config.AutoLevelStrength > 0f)
+            {
+                float k = Clamp01(Config.AutoLevelStrength * dt);
+                s.Theta = s.Theta * (1.0f - k);
+            }
+        }
+
+        // 4.2 Roll camera lerp.
+        public static void UpdateCameraRoll(DroneState s, float dmx, float dt)
+        {
+            float target = -s.LastPsiRate * Config.KRoll;
+
+            if (Math.Abs(dmx) < 0.01f)
+            {
+                // Recovery toward zero when no yaw input.
+                s.PhiCam = s.PhiCam * (1.0f - Config.KRollRecovery * dt);
+            }
+            else
+            {
+                float k = Clamp01(Config.KRollResponse * dt);
+                s.PhiCam = s.PhiCam + (target - s.PhiCam) * k;
+            }
+            s.PhiCam = Clamp(s.PhiCam, -Config.PhiMax, Config.PhiMax);
+        }
+
+        // 4.3-4.9 — Velocity / position integration.
+        // F is pre-computed by the caller from the live camera.ForwardVector
+        // (after Camera.Rotation was set). This sidesteps any axis-convention
+        // mismatch between the spec formula and how SHVDN/GTA build the camera
+        // basis from (pitch, roll, yaw) Euler angles — the engine is canonical.
+        public static void IntegrateMotion(DroneState s, float vVert, float dt, bool batteryDead)
+        {
+            var prof = Settings.CurrentProfile;
+            Vector3 F = s.F; // refreshed earlier this tick
+
+            // 6.3 V_sink when low battery (only if not fully dead — once dead T=0 anyway)
+            Vector3 vSink = Vector3.Zero;
+            if (!batteryDead && s.B < Config.BCrit)
+            {
+                float bLow = 1.0f - (s.B / Config.BCrit);
+                float sinkRate = bLow * bLow * Config.SinkMax;
+                vSink = new Vector3(0, 0, -sinkRate);
+            }
+
+            Vector3 vTarget = F * s.T + new Vector3(0, 0, vVert) + vSink;
+
+            // 4.6 g_eff
+            float gEff = batteryDead ? Config.GWorld : Config.GWorld * (1.0f - s.T / prof.TMax);
+            Vector3 G = new Vector3(0, 0, -gEff);
+
+            // 4.7 inertia
+            float kInertia = batteryDead ? Config.KInertiaDead : prof.KInertia;
+            Vector3 vPhys = Lerp(s.V, vTarget, Clamp01(kInertia * dt)) + G * dt;
+
+            // 4.8 quadratic drag: F_drag = -V * C_drag * |V|
+            float cDrag = batteryDead ? Config.CDragDead : prof.CDrag;
+            float speed = vPhys.Length();
+            Vector3 fDrag = -vPhys * cDrag * speed;
+
+            s.V = vPhys + fDrag * dt;
+
+            // 4.9 position
+            s.P = s.P + s.V * dt;
+        }
+
+        public static Vector3 Lerp(Vector3 a, Vector3 b, float k)
+        {
+            return new Vector3(a.X + (b.X - a.X) * k, a.Y + (b.Y - a.Y) * k, a.Z + (b.Z - a.Z) * k);
+        }
+
+        // 6.1 Battery drain.
+        public static void DrainBattery(DroneState s, float dt)
+        {
+            float dB = (Config.KBaseDrain + Config.KThrottleDrain * (s.T / Settings.CurrentProfile.TMax)) * dt;
+            s.B = Math.Max(s.B - dB, 0.0f);
+        }
+
+        // T/Y throttle
+        public static void AdjustThrottle(DroneState s, float delta)
+        {
+            s.T = Clamp(s.T + delta, Config.TMin, Settings.CurrentProfile.TMax);
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\PlayerGuard.cs
+using GTA;
+using GTA.Math;
+using GTA.Native;
+
+namespace FpvDroneMod
+{
+    // Saves player state on flight start and restores it on flight end.
+    // Implements spec sections 2.1 (preflight), 2.2 (init) and 2.4 (cleanup).
+    internal static class PlayerGuard
+    {
+        // Returns null on success, or a human-readable rejection reason.
+        public static string PreflightCheck(Player player, Ped ped)
+        {
+            if (Function.Call<bool>(Hash.NETWORK_IS_GAME_IN_PROGRESS))
+                return "Not available in multiplayer";
+            if (Function.Call<bool>(Hash.IS_PED_IN_ANY_VEHICLE, ped.Handle, false))
+                return "Cannot launch from a vehicle";
+            if (Natives.IsCutscenePlaying() || Game.IsCutsceneActive)
+                return "Cannot launch during a cutscene";
+            if (ped.IsDead || Function.Call<bool>(Hash.IS_PED_DEAD_OR_DYING, ped.Handle, true))
+                return "Cannot launch while dead";
+            if (Natives.IsPedRagdoll(ped))
+                return "Cannot launch while in ragdoll";
+            if (Natives.IsPedSwimming(ped))
+                return "Cannot launch while swimming";
+
+            // Roof check: ray straight up.
+            var p = ped.Position;
+            var ray = World.Raycast(p, p + new Vector3(0, 0, Config.SpawnHeight),
+                                    IntersectFlags.Map, ped);
+            if (ray.DidHit) return "Cannot launch — roof / overhang above";
+
+            return null;
+        }
+
+        public static void OnEnter(Player player, Ped ped, DroneState s)
+        {
+            // 1. Save originals (so we can restore even if interrupted).
+            // We can't reliably read invincibility / ragdoll-allowed flags via
+            // exposed natives, so we save what we can and restore to safe
+            // defaults for the rest. This matches typical god-mode-off play.
+            s.PlayerOriginal = ped.Position;
+            s.HeadingOriginal = ped.Heading;
+            s.PlayerInvincibleBefore = player.IsInvincible;
+            s.PedInvincibleBefore = false;
+            s.PedCanRagdollBefore = true;
+            s.WantedMultiplierBefore = 1.0f;
+            s.WantedLevelBefore = player.Wanted.WantedLevel;
+
+            // 2. Apply flight-mode flags (spec A1, A2, A4).
+            Natives.SetEntityCollision(ped, false, true);
+            Natives.SetEntityInvincible(ped, true);
+            Natives.SetPlayerInvincible(player, true);
+            Natives.SetPedCanRagdoll(ped, false);
+            // Hide ped fully — alpha=100 leaves the FPV camera (which sits at
+            // the ped's coords) seeing the legs/arms from inside the model.
+            // Trade-off: NPC/cops can no longer see the player either, so the
+            // "under-fire ghost" atmosphere from the spec is weaker. User
+            // explicitly preferred not seeing their own legs.
+            ped.IsVisible = false;
+            Natives.SetEntityAlpha(ped, Config.PlayerAlpha, false);
+
+            // Keep the original wanted-level multiplier so crimes caused by
+            // the drone (owned explosions) are attributed normally.
+            Natives.SetWantedLevelMultiplier(s.WantedMultiplierBefore);
+
+            // Initialise drone vector state.
+            s.PlayerOriginal = ped.Position;
+            s.Spawn = ped.Position;
+            s.P = ped.Position + new Vector3(0, 0, Config.SpawnHeight);
+            s.V = Vector3.Zero;
+            // Spawn drone aligned with the player's CAMERA, not their body
+            // heading. The player's torso may be facing one direction while
+            // the camera looks somewhere else — and the drone should fly
+            // toward where the player is *looking*. (Audit #7 fix.)
+            //
+            // GTA heading convention is counter-clockwise from +Y north;
+            // GameplayCamera.Rotation.Z is the same convention with the
+            // same sign, so we just convert deg→rad.
+            //
+            // Pitch (Theta): GTA Camera.Rotation.X is positive when looking
+            // up, negative when looking down — same sign convention as our
+            // drone Theta where Theta>0 means F.z>0 (nose up). So no
+            // sign flip needed here.
+            float camYawDeg = GameplayCamera.Rotation.Z;
+            float camPitchDeg = GameplayCamera.Rotation.X;
+            s.Psi = camYawDeg * MathF.Deg2Rad;
+            s.Theta = camPitchDeg * MathF.Deg2Rad;
+            // Clamp initial pitch into the configured cinematic range so a
+            // player aiming straight up/down doesn't break the integrator.
+            if (s.Theta < -1.4f) s.Theta = -1.4f;
+            if (s.Theta >  1.4f) s.Theta =  1.4f;
+            s.PhiCam = 0.0f;
+            s.T = Config.TInitial;
+            s.B = Config.BInitial;
+            s.Q = 1.0f;
+            s.I = 0.0f;
+            s.Stage = FlightStage.Controlled;
+            s.LoS = true;
+            s.WallsCount = 0;
+        }
+
+        public static void OnExit(Player player, Ped ped, DroneState s)
+        {
+            // Always reset time scale (also done by SlowMoFinal finally — defensive).
+            Game.TimeScale = 1.0f;
+
+            // Stop any animpostfx we may have started.
+            Natives.AnimpostfxStopAll();
+
+            // Teleport player back to where they launched from.
+            Natives.SetEntityCoordsNoOffset(ped, s.PlayerOriginal);
+            Natives.SetEntityHeading(ped, s.HeadingOriginal);
+
+            // Restore player flags.
+            Natives.SetEntityCollision(ped, true, true);
+            Natives.SetEntityInvincible(ped, s.PedInvincibleBefore);
+            Natives.SetPlayerInvincible(player, s.PlayerInvincibleBefore);
+            Natives.SetPedCanRagdoll(ped, s.PedCanRagdollBefore);
+            ped.IsVisible = true;
+            Natives.ResetEntityAlpha(ped);
+
+            Natives.SetWantedLevelMultiplier(s.WantedMultiplierBefore);
+
+            // Keep wanted level as-is on exit: if the drone attack generated a
+            // response, the player should keep those consequences.
+        }
+    }
+
+    internal static class MathF
+    {
+        public const float Pi = 3.14159265358979f;
+        public const float Deg2Rad = Pi / 180.0f;
+        public const float Rad2Deg = 180.0f / Pi;
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Settings.cs
+namespace FpvDroneMod
+{
+    internal static class Settings
+    {
+        public struct ExplosionPreset
+        {
+            public int Id;
+            public string Name;
+            public ExplosionPreset(int id, string name) { Id = id; Name = name; }
+        }
+
+        public class PayloadCategory
+        {
+            public string Name;
+            public ExplosionPreset[] Presets;
+            public PayloadCategory(string name, ExplosionPreset[] presets)
+            {
+                Name = name;
+                Presets = presets;
+            }
+        }
+
+        // --- Глобальные настройки ---
+        public static bool GiveStars = true;
+        public static int DamageOverrideIndex = 7; // По умолчанию 1000 HP
+        public static readonly float[] DamageValues = { 0, 50, 100, 200, 400, 600, 800, 1000, 1500, 2000, 3000, 5000 };
+
+        // --- Настройка силы физического импульса ---
+        public struct ImpulsePreset
+        {
+            public string Label;
+            public float ForceScale;     // Множитель базовой силы
+            public float Radius;         // Радиус в метрах
+            public float CameraShake;    // Интенсивность тряски (0.0 - 10.0+)
+            public bool Invisible;       // Скрыть стандартный визуальный эффект (для малых пресетов)
+            public bool Audible;         // Слышимость взрыва
+        }
+
+        public static int ImpulseScaleIndex = 2; // По умолчанию MEDIUM (NORMAL)
+        public static readonly ImpulsePreset[] ImpulsePresets = {
+            new ImpulsePreset { Label = "OFF",          ForceScale = 0f,     Radius = 0f,   CameraShake = 0f,    Invisible = true,  Audible = false },
+            new ImpulsePreset { Label = "WEAK",         ForceScale = 0.2f,   Radius = 3f,   CameraShake = 0.2f,  Invisible = true,  Audible = true  },
+            new ImpulsePreset { Label = "LIGHT",        ForceScale = 0.5f,   Radius = 5f,   CameraShake = 0.5f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "MEDIUM",       ForceScale = 1.0f,   Radius = 8f,   CameraShake = 1.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "HEAVY",        ForceScale = 2.5f,   Radius = 12f,  CameraShake = 1.5f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "STRONG",       ForceScale = 5.0f,   Radius = 20f,  CameraShake = 2.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "TACTICAL",     ForceScale = 12.0f,  Radius = 35f,  CameraShake = 3.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "BATTLEFIELD",  ForceScale = 25.0f,  Radius = 60f,  CameraShake = 4.5f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "DEVASTATING",  ForceScale = 50.0f,  Radius = 100f, CameraShake = 6.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "EXTREME",      ForceScale = 100.0f, Radius = 150f, CameraShake = 8.0f,  Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "CATASTROPHIC", ForceScale = 250.0f, Radius = 250f, CameraShake = 15.0f, Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "APOCALYPTIC",  ForceScale = 600.0f, Radius = 450f, CameraShake = 30.0f, Invisible = false, Audible = true  },
+            new ImpulsePreset { Label = "NUCLEAR",      ForceScale = 1500.0f, Radius = 800f, CameraShake = 100.0f, Invisible = false, Audible = true  }
+        };
+
+        public static ImpulsePreset CurrentImpulsePreset
+        {
+            get
+            {
+                int idx = ImpulseScaleIndex;
+                if (idx < 0) idx = 0;
+                if (idx >= ImpulsePresets.Length) idx = ImpulsePresets.Length - 1;
+                return ImpulsePresets[idx];
+            }
+        }
+
+        public static ExplosionPreset ActivePayload = new ExplosionPreset(0, "GRENADE");
+
+        public static int CurrentExplosionId => ActivePayload.Id;
+        public static string CurrentExplosionName => ActivePayload.Name;
+
+        public static readonly PayloadCategory[] Categories = new PayloadCategory[]
+        {
+            new PayloadCategory("ANTIPERSONNEL / LIGHT", new ExplosionPreset[] {
+                new ExplosionPreset(0, "GRENADE"),
+                new ExplosionPreset(1, "GRENADE LAUNCHER"),
+                new ExplosionPreset(2, "STICKY BOMB"),
+                new ExplosionPreset(43, "PIPEBOMB"),
+                new ExplosionPreset(3, "MOLOTOV"),
+                new ExplosionPreset(83, "EMP LAUNCHER")
+            }),
+            new PayloadCategory("ANTI-TANK / HEAVY", new ExplosionPreset[] {
+                new ExplosionPreset(4, "RPG ROCKET"),
+                new ExplosionPreset(5, "TANK SHELL"),
+                new ExplosionPreset(46, "APC SHELL"),
+                new ExplosionPreset(36, "RAILGUN"),
+                new ExplosionPreset(69, "SCRIPT_DRONE (KAMIKAZE)"),
+                new ExplosionPreset(72, "SCRIPT_MISSILE")
+            }),
+            new PayloadCategory("MINES / IED", new ExplosionPreset[] {
+                new ExplosionPreset(40, "PROXIMITY MINE"),
+                new ExplosionPreset(44, "VEHICLE MINE"),
+                new ExplosionPreset(71, "BURIED MINE")
+            }),
+            new PayloadCategory("AVIATION PAYLOAD", new ExplosionPreset[] {
+                new ExplosionPreset(50, "BOMB STANDARD"),
+                new ExplosionPreset(60, "BOMB WIDE"),
+                new ExplosionPreset(47, "BOMB CLUSTER"),
+                new ExplosionPreset(49, "BOMB INCENDIARY"),
+                new ExplosionPreset(51, "TORPEDO")
+            }),
+            new PayloadCategory("FUEL / GAS", new ExplosionPreset[] {
+                new ExplosionPreset(6, "HI-OCTANE FUEL"),
+                new ExplosionPreset(9, "PETROL PUMP"),
+                new ExplosionPreset(28, "PROPANE TANK"),
+                new ExplosionPreset(27, "EXPLOSIVE BARREL"),
+                new ExplosionPreset(34, "GAS TANK")
+            })
+        };
+
+        // --- Классы дрона ---
+        public struct DroneProfile
+        {
+            public string Label;
+            public float TMax;       // м/с — максимальная скорость
+            public float KInertia;   // отзывчивость (скорость следования за V_target)
+            public float SYaw;       // чувствительность рыскания
+            public float SPitch;     // чувствительность тангажа
+            public float ThetaMax;   // максимальный угол тангажа (рад)
+            public float CDrag;      // коэффициент аэродинамического сопротивления
+        }
+
+        public static int ActiveProfileIndex = 1; // По умолчанию Freestyle
+
+        public static readonly DroneProfile[] DroneProfiles = new DroneProfile[]
+        {
+            // Label            TMax    KInertia  SYaw    SPitch  ThetaMax  CDrag
+            new DroneProfile { Label = "TINY WHOOP",         TMax = 13.9f,  KInertia = 22f, SYaw = 0.12f, SPitch = 0.09f, ThetaMax = 0.7f,  CDrag = 0.045f },
+            new DroneProfile { Label = "FREESTYLE",          TMax = 44.4f,  KInertia = 25f, SYaw = 0.10f, SPitch = 0.08f, ThetaMax = 1.4f,  CDrag = 0.025f },
+            new DroneProfile { Label = "RACING",             TMax = 61.1f,  KInertia = 35f, SYaw = 0.09f, SPitch = 0.08f, ThetaMax = 1.55f, CDrag = 0.020f },
+            new DroneProfile { Label = "CINEMATIC (PRO)",    TMax = 97.2f,  KInertia = 18f, SYaw = 0.05f, SPitch = 0.04f, ThetaMax = 1.0f,  CDrag = 0.018f },
+            new DroneProfile { Label = "INTERCEPTOR",        TMax = 119.4f, KInertia = 42f, SYaw = 0.08f, SPitch = 0.07f, ThetaMax = 1.6f,  CDrag = 0.014f },
+            new DroneProfile { Label = "SPEEDSTER (RECORD)", TMax = 180.6f, KInertia = 50f, SYaw = 0.07f, SPitch = 0.06f, ThetaMax = 1.7f,  CDrag = 0.010f },
+        };
+
+        public static DroneProfile CurrentProfile
+        {
+            get
+            {
+                int idx = ActiveProfileIndex;
+                if (idx < 0) idx = 0;
+                if (idx >= DroneProfiles.Length) idx = DroneProfiles.Length - 1;
+                return DroneProfiles[idx];
+            }
+        }
+
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\Signal.cs
+using System;
+using GTA;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    // Spec section 7. Signal quality / interference.
+    internal static class Signal
+    {
+        // Cached LoS — refreshed every Config.LosCheckInterval s realtime by
+        // the caller. Audit #6 worry: doing 7 raycasts on the worst path
+        // every refresh causes a CPU spike. Mitigation: short-circuit the
+        // common case (open air → LoS clear → 0 walls) so we only pay the
+        // multi-ray cost when the cheap probe already shows obstruction.
+        public static void RefreshLineOfSight(DroneState s, Ped ignorePed)
+        {
+            // Lift the probe above ground/player feet so low-altitude flight does not
+            // falsely collect every curb or terrain bump as an obstruction.
+            Vector3 losStart = s.Spawn + new Vector3(0f, 0f, 1.0f);
+            Vector3 losEnd = s.P + new Vector3(0f, 0f, 0.2f);
+
+            var ray = World.Raycast(losStart, losEnd,
+                                    IntersectFlags.Map | IntersectFlags.Objects,
+                                    ignorePed);
+            if (!ray.DidHit)
+            {
+                s.LoS = true;
+                s.WallsCount = 0;
+            }
+            else
+            {
+                s.LoS = false;
+                s.WallsCount = CountWalls(losStart, losEnd, ignorePed);
+            }
+        }
+
+        // Approximate the number of geometry intersections by stepping along
+        // the ray and counting transitions inside/outside hits. We cap at 6
+        // because beyond that the signal is already fully dead and accuracy
+        // doesn't matter.
+        private static int CountWalls(Vector3 a, Vector3 b, Ped ignore)
+        {
+            const int maxWalls = 6;
+            int walls = 0;
+            Vector3 from = a;
+            for (int i = 0; i < maxWalls + 1; i++)
+            {
+                var ray = World.Raycast(from, b, IntersectFlags.Map | IntersectFlags.Objects, ignore);
+                if (!ray.DidHit) break;
+                walls++;
+                Vector3 dir = (b - from);
+                float len = dir.Length();
+                if (len < 0.01f) break;
+                dir = dir / len;
+                float stepDist = Math.Max(0.5f, len * 0.05f);
+                from = ray.HitPosition + dir * stepDist; // adaptive step
+                if ((b - from).Length() < 0.5f) break;
+            }
+            return walls;
+        }
+
+        // 7.3 Compute Q and I.
+        public static void ComputeQuality(DroneState s)
+        {
+            float dSafe = s.LoS ? Config.DSafeField : Config.DSafeCity;
+            float dCrit = s.LoS ? Config.DCritField : Config.DCritCity;
+            float dMax  = s.LoS ? Config.DMaxField  : Config.DMaxCity;
+
+            float d = (s.P - s.Spawn).Length();
+
+            float qDist;
+            if (d <= dSafe) qDist = 1.0f;
+            else if (d <= dCrit) qDist = 1.0f - ((d - dSafe) / (dCrit - dSafe)) * 0.6f;
+            else if (d <= dMax) qDist = 0.4f - ((d - dCrit) / (dMax - dCrit)) * 0.4f;
+            else qDist = 0.0f;
+
+            float qWalls = Math.Max(1.0f - s.WallsCount * Config.WallPenalty, 0.0f);
+
+            float qBattery;
+            if (s.B >= 100.0f) qBattery = 1.0f;
+            else if (s.B <= Config.BCrit) qBattery = 0.0f;
+            else qBattery = (s.B - Config.BCrit) / (100.0f - Config.BCrit);
+
+            float q = qDist * qWalls * qBattery;
+            if (q < 0f) q = 0f; if (q > 1f) q = 1f;
+
+            s.Q = q;
+            s.I = 1.0f - q;
+        }
+
+        // 8.1-8.4 Stage transitions, using realtime dt for timers (spec B6).
+        public static void UpdateStage(DroneState s, float dtReal)
+        {
+            switch (s.Stage)
+            {
+                case FlightStage.Controlled:
+                case FlightStage.Degraded:
+                    if (s.I >= Config.ILost)
+                    {
+                        s.LostTimerRealtime += dtReal;
+                        if (s.LostTimerRealtime >= Config.LostHoldTime)
+                        {
+                            s.Stage = FlightStage.Lost;
+                            s.LostTimerRealtime = 0;
+                            // Lock heading on entry: F_last_known = F now
+                            s.FLastKnown = s.F;
+                            s.TLast = s.T;
+                        }
+                    }
+                    else
+                    {
+                        s.LostTimerRealtime = 0;
+                        s.Stage = (s.I >= Config.IDegraded)
+                            ? FlightStage.Degraded
+                            : FlightStage.Controlled;
+                    }
+                    break;
+
+                case FlightStage.Lost:
+                    if (s.I < Config.IRecover)
+                    {
+                        s.RecoverTimerRealtime += dtReal;
+                        if (s.RecoverTimerRealtime >= Config.RecoverHoldTime)
+                        {
+                            s.Stage = FlightStage.Degraded;
+                            s.RecoverTimerRealtime = 0;
+                            s.LostTimerRealtime = 0;
+                            s.SignalRestoredBannerT = 2.0f;
+                        }
+                    }
+                    else
+                    {
+                        s.RecoverTimerRealtime = 0;
+                    }
+                    // Throttle ramps to TMax in autonomous mode (spec 8.3).
+                    s.T = s.T + (Settings.CurrentProfile.TMax - s.T) * Math.Min(1.0f, Config.LostThrottleRamp * dtReal);
+                    // Yaw/pitch frozen — caller sets dmx=dmy=0 before calling Apply* funcs.
+                    break;
+            }
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\SlowMoFinal.cs
+using System;
+using System.Diagnostics;
+using GTA;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    // Spec section 10 (rewritten for "camera = warhead, contact-only" model).
+    //
+    // Sequence triggered the instant the drone's contact-frame raycast hits
+    // a surface. There is no predictive slow-down before contact.
+    //
+    //   Begin(hitPoint)                   — t = 0 at moment of impact
+    //   ├── Phase.RampDown   (0 → 0.1s)   TimeScale 1.0 → 0.15
+    //   ├── Phase.CamMove    (0.1 → 0.18) FPV cam interpolates back to a
+    //   │                                 raycast-clear cinematic anchor
+    //   │                                 pointing at hit_point. Explosion
+    //   │                                 (ADD_EXPLOSION) fires once at end
+    //   │                                 of this lerp.
+    //   ├── Phase.Hold       (0.18 → 2.18) cinematic camera holds
+    //   ├── Phase.RampUp     (2.18 → 2.28) TimeScale 0.15 → 1.0
+    //   └── Phase.Done                    Main calls EndFlight()
+    //
+    // try/finally + abort handler in Main.cs guarantee TimeScale → 1.0 even
+    // on unhandled exceptions (spec A8).
+    internal sealed class SlowMoFinal
+    {
+        private enum Phase { Done, RampDown, CamMove, Hold, RampUp }
+
+        private Phase _phase = Phase.Done;
+        private readonly Stopwatch _t = new Stopwatch();
+        private Vector3 _hitPoint;
+        private Vector3 _approachDir;   // unit vector along which the drone hit
+        private Vector3 _camStart;
+        private Vector3 _camTarget;
+        private float _camMoveDuration = Config.CamTransition;
+        private bool _exploded;
+        private float _impactSpeed;     // captured at Begin so SLow-mo can use
+                                        //   the *real* impact speed even after
+                                        //   we zero V to halt the drone.
+        private Camera _slowMoCam;
+
+        public bool Active => _phase != Phase.Done;
+        public bool ReadyForExit => _phase == Phase.Done && _exploded;
+
+        // Called from Main on the contact frame, immediately after the drone
+        // is snapped to hit_point − F*SnapInset. Spawns the cinematic camera
+        // co-located with the FPV camera so the cut is invisible, then begins
+        // ramping time scale + interpolating the cinematic anchor.
+        public void Begin(DroneState s, Camera fpvCam, Vector3 hitPoint,
+                          Vector3 approachDir, float impactSpeed,
+                          Vector3 fpvCamPrePos, Ped ignorePed)
+        {
+            _hitPoint = hitPoint;
+            _approachDir = approachDir;
+            _impactSpeed = impactSpeed;
+            _exploded = false;
+            // Use the pre-snap FPV camera position so the cinematic does
+            // *not* start from the inside of a wall.
+            _camStart = fpvCamPrePos;
+            _camTarget = ChooseCinematicCameraPosition(s, hitPoint, ignorePed);
+            float camDist = (_camTarget - _camStart).Length();
+            _camMoveDuration = Math.Max(0.15f, Math.Min(0.5f, camDist / 20.0f));
+
+#pragma warning disable CS0618 // see Main.cs note on RenderingCamera
+            _slowMoCam = World.CreateCamera(_camStart, fpvCam.Rotation, fpvCam.FieldOfView);
+            World.RenderingCamera = _slowMoCam;
+#pragma warning restore CS0618
+
+            _phase = Phase.RampDown;
+            _t.Restart();
+        }
+
+        // Per-frame realtime update.
+        public void Update(DroneState s)
+        {
+            float t = (float)_t.Elapsed.TotalSeconds;
+
+            switch (_phase)
+            {
+                case Phase.RampDown:
+                {
+                    // 1.0 → 0.15 over TimeScaleRamp s realtime.
+                    float k = Math.Min(1f, t / Config.TimeScaleRamp);
+                    Game.TimeScale = 1.0f + (Config.TimeScaleSlow - 1.0f) * k;
+                    if (k >= 1f)
+                    {
+                        _phase = Phase.CamMove;
+                        _t.Restart();
+                    }
+                    break;
+                }
+
+                case Phase.CamMove:
+                {
+                    float k = Math.Min(1f, t / _camMoveDuration);
+                    Vector3 pos = _camStart + (_camTarget - _camStart) * k;
+                    if (_slowMoCam != null && _slowMoCam.Exists())
+                    {
+                        _slowMoCam.Position = pos;
+                        _slowMoCam.PointAt(_hitPoint);
+                    }
+                    if (k >= 1f)
+                    {
+                        if (!_exploded)
+                        {
+                            Collision.Detonate(_hitPoint, _approachDir, _impactSpeed);
+                            _exploded = true;
+                        }
+                        _phase = Phase.Hold;
+                        _t.Restart();
+                    }
+                    break;
+                }
+
+                case Phase.Hold:
+                {
+                    if (t >= Config.CamHoldAfterExplosion)
+                    {
+                        _phase = Phase.RampUp;
+                        _t.Restart();
+                    }
+                    break;
+                }
+
+                case Phase.RampUp:
+                {
+                    float k = Math.Min(1f, t / Config.TimeScaleRamp);
+                    Game.TimeScale = Config.TimeScaleSlow + (1.0f - Config.TimeScaleSlow) * k;
+                    if (k >= 1f)
+                    {
+                        Game.TimeScale = 1.0f;
+                        Cleanup();
+                        _phase = Phase.Done;
+                    }
+                    break;
+                }
+            }
+        }
+
+        public void ForceAbort()
+        {
+            try { Game.TimeScale = 1.0f; } catch { }
+            Cleanup();
+            _phase = Phase.Done;
+            _exploded = false;
+        }
+
+        private void Cleanup()
+        {
+            if (_slowMoCam != null && _slowMoCam.Exists())
+            {
+                try { _slowMoCam.Delete(); } catch { }
+            }
+            _slowMoCam = null;
+        }
+
+        // Spec 10.3 — find a viable cinematic camera position.
+        // Tries hit_point + (-F) * D_cam + (0, 0, H_cam). If the path collides
+        // (e.g. the drone hit a ceiling and the back-and-up offset would put
+        // the camera in the wall behind the drone), pull back to 80% of the
+        // unobstructed distance. If that's still too tight, fall back to a
+        // small offset above the impact point so we never end up inside a
+        // surface.
+        private static Vector3 ChooseCinematicCameraPosition(DroneState s, Vector3 hitPoint, Ped ignorePed)
+        {
+            Vector3 back = -s.F;
+            Vector3 candidate = hitPoint + back * Config.DCam + new Vector3(0, 0, Config.HCam);
+
+            var checkRay = World.Raycast(hitPoint, candidate, IntersectFlags.Map, ignorePed);
+            if (!checkRay.DidHit)
+                return candidate;
+
+            float clear = (checkRay.HitPosition - hitPoint).Length();
+            if (clear < Config.CamMinClearance)
+            {
+                // Too tight — drop back to just above the drone position.
+                return s.P + new Vector3(0, 0, 1.5f);
+            }
+            // Pull back to 80% of the clear distance along the same ray direction.
+            return hitPoint + (checkRay.HitPosition - hitPoint) * 0.8f;
+        }
+    }
+}
+
+
+C:\Users\Administrator\Desktop\projects\gta-5-fpv-mod\src\State.cs
+using GTA;
+using GTA.Math;
+
+namespace FpvDroneMod
+{
+    internal enum FlightStage
+    {
+        Controlled,
+        Degraded,
+        Lost
+    }
+
+    internal enum VisionMode
+    {
+        Normal,
+        Thermal,
+        NightVision
+    }
+
+    internal enum AutoPilotState
+    {
+        Off,
+        Tracking,
+        Attacking
+    }
+
+    // Vector state from spec section 3.
+    internal sealed class DroneState
+    {
+        public Vector3 P;            // drone position
+        public Vector3 V;            // drone velocity
+        public Vector3 F = new Vector3(0, 1, 0); // forward, refreshed each tick from cam.ForwardVector
+        public float Psi;            // yaw, rad
+        public float Theta;          // pitch, rad
+        public float PhiCam;         // camera roll, rad
+        public float T;              // throttle target speed, m/s
+        public float B;              // battery, %
+        public float Q;              // signal quality 0..1
+        public float I;              // interference 0..1 = 1-Q
+        public bool LoS;             // line of sight to spawn
+        public int WallsCount;       // number of walls between spawn and drone
+        public FlightStage Stage = FlightStage.Controlled;
+        public VisionMode Vision = VisionMode.Normal;
+
+        // Loitering munition autopilot target-lock state.
+        public AutoPilotState AutopilotMode = AutoPilotState.Off;
+        public Entity PotentialTarget = null;
+        public Entity LockedTarget = null;
+        public float TargetLostTimer = 0f;
+
+        public Vector3 Spawn;        // P_spawn
+
+        // Saved player state (restored on exit)
+        public Vector3 PlayerOriginal;
+        public float HeadingOriginal;
+        public bool PlayerInvincibleBefore;
+        public bool PedInvincibleBefore;
+        public bool PedCanRagdollBefore;
+        public float WantedMultiplierBefore;
+        public int WantedLevelBefore;
+
+        // Flight-loop helpers
+        public Vector3 FLastKnown = Vector3.RelativeFront;
+        public float TLast = 20.0f;
+        public float LostTimerRealtime;       // s
+        public float RecoverTimerRealtime;    // s
+        public float LosCheckTimer;           // s — when ≥ LosCheckInterval, refresh
+        public float SignalRestoredBannerT;   // s — countdown for banner
+        public float MotorsDeadBannerT;       // s
+
+        // Last computed inputs (for distortion display)
+        public float LastDmx;
+        public float LastDmy;
+        public float LastPsiRate;
+
+        // Раскрутка при старте
+        public bool  Spooling      = false;
+        public float SpoolElapsed  = 0f;    // сек реального времени
+        public float FlightTimerReal = 0f;   // секунды с момента запуска
+        public float MahUsed         = 0f;   // израсходованная ёмкость, мАч
+
+        // NPC-реакция
+        public float NpcHoverTimer    = 0f;  // сек — сколько дрон висит над пешеходом
+        public float CopShootTimer    = 0f;  // сек — таймер кадения стрельбы копов
+        public float PanicCooldown    = 0f;  // сек — антиспам паники пешеходов
+
+        // Slow-mo banner flag (set by Main when Collision.Outcome.ImpactImminent fires)
+        public bool ImpactImminent;
+    }
+}
+
+
