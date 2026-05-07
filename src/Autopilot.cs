@@ -47,12 +47,18 @@ namespace FpvDroneMod
             }
             else if (s.AutopilotMode == AutoPilotState.Attacking)
             {
-                // Terminal dive: smoothly spool up throttle as if holding T, but twice as aggressively.
-                Physics.AdjustThrottle(s, Config.ThrottleRate * dtReal * 2.0f);
+                // Terminal dive: smoothly spool up throttle as if holding T.
+                Physics.AdjustThrottle(s, Config.ThrottleRate * dtReal);
 
-                // Kinetic lead: aim at the predicted intercept point using current closing time.
-                float dist = (targetPos - dronePos).Length();
-                float closingSpeed = Math.Max(20f, s.V.Length());
+                // Kinetic lead: use line-of-sight closing velocity so head-on targets add speeds correctly.
+                Vector3 toTarget = targetPos - dronePos;
+                float dist = toTarget.Length();
+                if (dist <= 0.001f) return;
+
+                Vector3 dirToTarget = toTarget / dist;
+                float closingSpeed = Vector3.Dot(s.V - s.LockedTarget.Velocity, dirToTarget);
+                if (closingSpeed < 5f) closingSpeed = 5f;
+
                 float timeToImpact = dist / closingSpeed;
                 Vector3 predictedPos = targetPos + (s.LockedTarget.Velocity * timeToImpact);
 

@@ -311,15 +311,10 @@ namespace FpvDroneMod
             (dmx, dmy) = InputDistortion.Apply(dmx, dmy, _state.I, _state.Stage);
             _state.LastDmx = dmx; _state.LastDmy = dmy;
 
-            // Loitering-munition target search: raycast straight through the FPV reticle.
+            // Loitering-munition target search: cone scan around the FPV reticle.
             if (_state.AutopilotMode == AutoPilotState.Off)
             {
-                var targetRay = World.Raycast(_state.P, _state.P + _state.F * 300f,
-                    IntersectFlags.Vehicles | IntersectFlags.PedCapsules, ped);
-                Entity aimEntity = targetRay.DidHit ? targetRay.HitEntity : null;
-                _state.PotentialTarget = aimEntity is Vehicle || (aimEntity is Ped aimPed && aimPed != ped)
-                    ? aimEntity
-                    : null;
+                _state.PotentialTarget = GetTargetInCrosshair(ped);
             }
             else
             {
@@ -502,6 +497,62 @@ namespace FpvDroneMod
 
             // 13.40 HUD.
             Hud.Draw(_state, Config.FpvFov);
+        }
+
+        private Entity GetTargetInCrosshair(Ped playerPed)
+        {
+            Entity bestEntity = null;
+            float bestDot = 0.985f; // Capture cone angle: about 10 degrees.
+
+            try
+            {
+                Vehicle[] vehicles = World.GetNearbyVehicles(_state.P, 300f);
+                foreach (Vehicle vehicle in vehicles)
+                {
+                    if (vehicle == null || !vehicle.Exists()) continue;
+
+                    Vector3 toVehicle = vehicle.Position - _state.P;
+                    float dist = toVehicle.Length();
+                    if (dist < 5f) continue;
+
+                    float dot = Vector3.Dot(_state.F, toVehicle / dist);
+                    if (dot > bestDot && !World.Raycast(_state.P, vehicle.Position, IntersectFlags.Map, playerPed).DidHit)
+                    {
+                        bestDot = dot;
+                        bestEntity = vehicle;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("GetTargetInCrosshair: vehicle scan failed", ex);
+            }
+
+            try
+            {
+                Ped[] peds = World.GetNearbyPeds(_state.P, 300f);
+                foreach (Ped ped in peds)
+                {
+                    if (ped == null || !ped.Exists() || ped == playerPed) continue;
+
+                    Vector3 toPed = ped.Position - _state.P;
+                    float dist = toPed.Length();
+                    if (dist < 5f) continue;
+
+                    float dot = Vector3.Dot(_state.F, toPed / dist);
+                    if (dot > bestDot && !World.Raycast(_state.P, ped.Position + new Vector3(0f, 0f, 0.5f), IntersectFlags.Map, playerPed).DidHit)
+                    {
+                        bestDot = dot;
+                        bestEntity = ped;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("GetTargetInCrosshair: ped scan failed", ex);
+            }
+
+            return bestEntity;
         }
     }
 
