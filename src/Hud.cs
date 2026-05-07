@@ -176,7 +176,7 @@ namespace FpvDroneMod
             Color vCol = volts < 14.0f ? Red : White;
 
             DrawText($"MAIN {volts:F1}V", new PointF(bx, by), 0.32f, vCol);
-            DrawText($"CURR {amps:F0}A", new PointF(bx, by + 18f), 0.32f, White);
+            DrawText($"CURR {amps:F1}A", new PointF(bx, by + 18f), 0.32f, White);
             DrawText($"CONS {s.MahUsed:F0}mAh", new PointF(bx, by + 36f), 0.32f, White);
         }
 
@@ -188,8 +188,11 @@ namespace FpvDroneMod
             float vSpeed = s.V.Z;
             string vsSign = vSpeed >= 0 ? "+" : "";
 
+            float pitchDeg = s.Theta * MathF.Rad2Deg;
+            string pitchSign = pitchDeg >= 0 ? "+" : "";
+
             DrawText($"VAR {vsSign}{vSpeed:F1}", new PointF(bx, by), 0.32f, White);
-            DrawText("VTX 12.0V", new PointF(bx, by + 18f), 0.32f, White);
+            DrawText($"PTCH {pitchSign}{pitchDeg:F0}", new PointF(bx, by + 18f), 0.32f, White);
             DrawText($"FLY {FormatTime(s.FlightTimerReal)}", new PointF(bx, by + 36f), 0.32f, White);
         }
 
@@ -224,21 +227,37 @@ namespace FpvDroneMod
 
         private static void DrawHorizon(DroneState s)
         {
+            float cx = ScreenW / 2f;
+            float cy = ScreenH / 2f;
+
+            float gap = 45f;
+            float arm = 15f;
+
+            DrawOsdLine(new PointF(cx - gap - arm, cy), new SizeF(arm, 2f), White);
+            DrawOsdLine(new PointF(cx - gap - arm, cy - 5f), new SizeF(2f, 7f), White);
+            DrawOsdLine(new PointF(cx + gap, cy), new SizeF(arm, 2f), White);
+            DrawOsdLine(new PointF(cx + gap + arm - 2f, cy - 5f), new SizeF(2f, 7f), White);
+
             float yOff = s.Theta * Config.KHorizonScale;
-            float yCenter = ScreenH / 2f + yOff;
+            float yCenter = cy + yOff;
             float angleRad = -s.PhiCam;
 
             const int segments = 24;
-            const float halfLen = 180f;
+            const float halfLen = 160f;
             float dx = (float)Math.Cos(angleRad) * (halfLen * 2f / segments);
             float dy = (float)Math.Sin(angleRad) * (halfLen * 2f / segments);
-            float x0 = ScreenW / 2f - (float)Math.Cos(angleRad) * halfLen;
+            float x0 = cx - (float)Math.Cos(angleRad) * halfLen;
             float y0 = yCenter - (float)Math.Sin(angleRad) * halfLen;
 
             for (int i = 0; i < segments; i++)
             {
                 if (i % 2 == 0)
-                    DrawOsdLine(new PointF(x0 + dx * i, y0 + dy * i), new SizeF(8f, 2f), White);
+                {
+                    float segX = x0 + dx * i;
+                    if (Math.Abs(segX - cx) < 30f && Math.Abs(yCenter - cy) < 20f) continue;
+
+                    DrawOsdLine(new PointF(segX, y0 + dy * i), new SizeF(10f, 2f), White);
+                }
             }
         }
 
