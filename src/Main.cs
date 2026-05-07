@@ -501,58 +501,39 @@ namespace FpvDroneMod
 
         private Entity GetTargetInCrosshair(Ped playerPed)
         {
-            Entity bestEntity = null;
-            float bestDot = 0.985f; // Capture cone angle: about 10 degrees.
-
             try
             {
-                Vehicle[] vehicles = World.GetNearbyVehicles(_state.P, 300f);
-                foreach (Vehicle vehicle in vehicles)
-                {
-                    if (vehicle == null || !vehicle.Exists()) continue;
+                Vector3 start = _state.P;
+                Vector3 end = start + (_state.F * 500f);
 
-                    Vector3 toVehicle = vehicle.Position - _state.P;
-                    float dist = toVehicle.Length();
-                    if (dist < 5f) continue;
+                var ray = World.Raycast(
+                    start,
+                    end,
+                    IntersectFlags.Vehicles | IntersectFlags.Peds,
+                    playerPed
+                );
 
-                    float dot = Vector3.Dot(_state.F, toVehicle / dist);
-                    if (dot > bestDot && !World.Raycast(_state.P, vehicle.Position, IntersectFlags.Map, playerPed).DidHit)
-                    {
-                        bestDot = dot;
-                        bestEntity = vehicle;
-                    }
-                }
+                if (!ray.DidHit)
+                    return null;
+
+                Entity ent = ray.HitEntity;
+
+                if (ent == null || !ent.Exists())
+                    return null;
+
+                if (!(ent is Vehicle) && !(ent is Ped))
+                    return null;
+
+                if (ent.Handle == playerPed.Handle)
+                    return null;
+
+                return ent;
             }
             catch (Exception ex)
             {
-                Log.Error("GetTargetInCrosshair: vehicle scan failed", ex);
+                Log.Error("GetTargetInCrosshair failed", ex);
+                return null;
             }
-
-            try
-            {
-                Ped[] peds = World.GetNearbyPeds(_state.P, 300f);
-                foreach (Ped ped in peds)
-                {
-                    if (ped == null || !ped.Exists() || ped == playerPed) continue;
-
-                    Vector3 toPed = ped.Position - _state.P;
-                    float dist = toPed.Length();
-                    if (dist < 5f) continue;
-
-                    float dot = Vector3.Dot(_state.F, toPed / dist);
-                    if (dot > bestDot && !World.Raycast(_state.P, ped.Position + new Vector3(0f, 0f, 0.5f), IntersectFlags.Map, playerPed).DidHit)
-                    {
-                        bestDot = dot;
-                        bestEntity = ped;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("GetTargetInCrosshair: ped scan failed", ex);
-            }
-
-            return bestEntity;
         }
     }
 

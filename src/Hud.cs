@@ -186,7 +186,7 @@ namespace FpvDroneMod
             DrawOsdLine(new PointF(cx - 24f, cy - 1f), new SizeF(12f, 2f), reticleColor);
 
             // 2. Идеальный OSD-круг по центру (○).
-            DrawText("○", new PointF(cx - 7.5f, cy - 11.5f), 0.38f, reticleColor);
+            DrawText("O", new PointF(cx - 7.5f, cy - 11.5f), 0.38f, reticleColor);
 
             // 3. Вывод статуса и дистанции справа от прицела.
             if (!string.IsNullOrEmpty(statusText))
