@@ -166,7 +166,7 @@ namespace FpvDroneMod
             // (1000 HP ~= 5.0 scale), then add only the existing speed bonus.
             float baseScale = hpValue * 0.005f;
             float vNorm = (speed - Config.DamageScaleMinSpeed)
-                          / Math.Max(0.01f, Config.TMax - Config.DamageScaleMinSpeed);
+                          / Math.Max(0.01f, Settings.CurrentProfile.TMax - Config.DamageScaleMinSpeed);
             vNorm = Math.Max(0f, Math.Min(1f, vNorm));
             float damageScale = baseScale * (1.0f + 0.2f * vNorm);
 

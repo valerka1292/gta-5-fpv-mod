@@ -347,11 +347,11 @@ namespace FpvDroneMod
                 _state.SpoolElapsed += dtReal;
                 float spoolT = Physics.Clamp01(_state.SpoolElapsed / Config.TSpoolDuration);
                 // Квадратичная кривая для плавного нарастания
-                _state.T = spoolT * spoolT * Config.TSpoolUp;
+                _state.T = spoolT * spoolT * Math.Min(Config.TSpoolUp, Settings.CurrentProfile.TMax);
                 if (_state.SpoolElapsed >= Config.TSpoolDuration)
                 {
                     _state.Spooling    = false;
-                    _state.T           = Config.TSpoolUp;
+                    _state.T           = Math.Min(Config.TSpoolUp, Settings.CurrentProfile.TMax);
                 }
             }
             if (batteryDead) _state.T = 0f;
@@ -362,7 +362,7 @@ namespace FpvDroneMod
             Vector3 prevP = _state.P;
             // Симуляция OSD-телеметрии: время полёта и расход ёмкости
             _state.FlightTimerReal += dtReal;
-            float currentAmps = (_state.T / Config.TMax) * 35f;   // ток зависит от газа
+            float currentAmps = (_state.T / Settings.CurrentProfile.TMax) * 35f;   // ток зависит от газа
             _state.MahUsed += currentAmps * dtReal / 3.6f;        // А·с → мАч
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
