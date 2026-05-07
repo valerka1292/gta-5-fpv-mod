@@ -95,6 +95,16 @@ namespace FpvDroneMod
             return Function.Call<bool>(Hash.IS_PAUSE_MENU_ACTIVE);
         }
 
+        public static void SetSeethrough(bool toggle)
+        {
+            Function.Call(Hash.SET_SEETHROUGH, toggle);
+        }
+
+        public static void SetNightvision(bool toggle)
+        {
+            Function.Call(Hash.SET_NIGHTVISION, toggle);
+        }
+
         public static void DisableAllControlsThisFrame()
         {
             // Block all three control groups for safety (spec M5).

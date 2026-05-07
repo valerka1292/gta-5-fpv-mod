@@ -9,6 +9,13 @@ namespace FpvDroneMod
         Lost
     }
 
+    internal enum VisionMode
+    {
+        Normal,
+        Thermal,
+        NightVision
+    }
+
     // Vector state from spec section 3.
     internal sealed class DroneState
     {
@@ -25,6 +32,7 @@ namespace FpvDroneMod
         public bool LoS;             // line of sight to spawn
         public int WallsCount;       // number of walls between spawn and drone
         public FlightStage Stage = FlightStage.Controlled;
+        public VisionMode Vision = VisionMode.Normal;
 
         public Vector3 Spawn;        // P_spawn
 
