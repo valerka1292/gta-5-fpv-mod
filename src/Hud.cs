@@ -183,25 +183,15 @@ namespace FpvDroneMod
             }
 
             // 1. Левая линия (—).
-            DrawOsdLine(new PointF(cx - 26f, cy - 1f), new SizeF(12f, 2f), reticleColor);
+            DrawOsdLine(new PointF(cx - 24f, cy - 1f), new SizeF(12f, 2f), reticleColor);
 
             // 2. Идеальный OSD-круг по центру (○).
-            float r = 6f;
-            for (int i = 0; i < 12; i++)
-            {
-                double a1 = i * (Math.PI * 2 / 12);
-                double a2 = (i + 1) * (Math.PI * 2 / 12);
-                float x1 = cx + (float)Math.Cos(a1) * r;
-                float y1 = cy + (float)Math.Sin(a1) * r;
-                float x2 = cx + (float)Math.Cos(a2) * r;
-                float y2 = cy + (float)Math.Sin(a2) * r;
-                DrawOsdLine(new PointF(x1, y1), new SizeF(Math.Max(1.5f, Math.Abs(x2 - x1)), Math.Max(1.5f, Math.Abs(y2 - y1))), reticleColor);
-            }
+            DrawText("○", new PointF(cx - 7.5f, cy - 11.5f), 0.38f, reticleColor);
 
             // 3. Вывод статуса и дистанции справа от прицела.
             if (!string.IsNullOrEmpty(statusText))
             {
-                DrawText(statusText, new PointF(cx + 14f, cy - 8f), 0.3f, reticleColor);
+                DrawText(statusText, new PointF(cx + 12f, cy - 10f), 0.3f, reticleColor);
             }
         }
 
