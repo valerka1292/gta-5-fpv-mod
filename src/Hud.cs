@@ -213,7 +213,7 @@ namespace FpvDroneMod
             return Math.Max(12.8f, baseV - sag);
         }
 
-        private static float SimAmps(DroneState s) => (s.T / Config.TMax) * 35f;
+        private static float SimAmps(DroneState s) => (s.T / Settings.CurrentProfile.TMax) * 35f;
 
         private static string FormatTime(float t)
         {

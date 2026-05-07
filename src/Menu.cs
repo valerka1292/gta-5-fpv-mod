@@ -1,3 +1,4 @@
+using System;
 using System.Drawing;
 using System.Windows.Forms;
 using GTA.UI;
@@ -48,7 +49,7 @@ namespace FpvDroneMod
                     if (_state == MenuState.CategoryView)
                     {
                         _currentCategoryIndex--;
-                        if (_currentCategoryIndex < -3)
+                        if (_currentCategoryIndex < -4)
                             _currentCategoryIndex = Settings.Categories.Length - 1;
                     }
                     else
@@ -63,7 +64,7 @@ namespace FpvDroneMod
                     {
                         _currentCategoryIndex++;
                         if (_currentCategoryIndex >= Settings.Categories.Length)
-                            _currentCategoryIndex = -3;
+                            _currentCategoryIndex = -4;
                     }
                     else
                     {
@@ -75,7 +76,11 @@ namespace FpvDroneMod
                 case Keys.Enter:
                     if (_state == MenuState.CategoryView)
                     {
-                        if (_currentCategoryIndex == -3)
+                        if (_currentCategoryIndex == -4)
+                        {
+                            Settings.ActiveProfileIndex = (Settings.ActiveProfileIndex + 1) % Settings.DroneProfiles.Length;
+                        }
+                        else if (_currentCategoryIndex == -3)
                         {
                             int impulseIdx = Settings.ImpulseScaleIndex;
                             if (impulseIdx < 0) impulseIdx = 0;
@@ -105,6 +110,13 @@ namespace FpvDroneMod
                     return true;
 
                 case Keys.Left:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -4)
+                    {
+                        Settings.ActiveProfileIndex--;
+                        if (Settings.ActiveProfileIndex < 0)
+                            Settings.ActiveProfileIndex = Settings.DroneProfiles.Length - 1;
+                        return true;
+                    }
                     if (_state == MenuState.CategoryView && _currentCategoryIndex == -3)
                     {
                         int impulseIdx = Settings.ImpulseScaleIndex;
@@ -125,6 +137,11 @@ namespace FpvDroneMod
                     return false;
 
                 case Keys.Right:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -4)
+                    {
+                        Settings.ActiveProfileIndex = (Settings.ActiveProfileIndex + 1) % Settings.DroneProfiles.Length;
+                        return true;
+                    }
                     if (_state == MenuState.CategoryView && _currentCategoryIndex == -3)
                     {
                         int impulseIdx = Settings.ImpulseScaleIndex;
@@ -169,7 +186,7 @@ namespace FpvDroneMod
             const float padBot = 10f;
 
             int rows = _state == MenuState.CategoryView
-                ? Settings.Categories.Length + 3
+                ? Settings.Categories.Length + 4
                 : Settings.Categories[_currentCategoryIndex].Presets.Length;
 
             float menuH = headerH + rows * rowH + padBot;
@@ -257,9 +274,32 @@ namespace FpvDroneMod
                     new PointF(x + 290f, damageY), 0.38f,
                     damageColor, Font.ChaletLondon).Draw();
 
+                // ── DRONE CLASS ──────────────────────────────────────────────
+                float classY = damageY + rowH;
+                bool classSelected = _currentCategoryIndex == -4;
+                Color classColor = classSelected ? Color.Black : Color.White;
+
+                if (classSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, classY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                var prof = Settings.CurrentProfile;
+                int speedKph = (int)Math.Round(prof.TMax * 3.6f);
+
+                new TextElement("DRONE CLASS",
+                    new PointF(x + 10f, classY), 0.38f,
+                    classColor, Font.ChaletLondon).Draw();
+                new TextElement($"<  {prof.Label}  ({speedKph} KPH)  >",
+                    new PointF(x + 180f, classY), 0.38f,
+                    classColor, Font.ChaletLondon).Draw();
+
                 for (int i = 0; i < Settings.Categories.Length; i++)
                 {
-                    float ry = y + headerH + 4f + (i + 3) * rowH;
+                    float ry = y + headerH + 4f + (i + 4) * rowH;
                     Color textColor = i == _currentCategoryIndex ? Color.Black : Color.White;
 
                     if (i == _currentCategoryIndex)

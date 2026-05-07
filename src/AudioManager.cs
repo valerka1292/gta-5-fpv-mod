@@ -185,7 +185,7 @@ namespace FpvDroneMod
                 // Квадратичная кривая: основной прирост питча после 60% скорости —
                 // создаёт эффект "форсажа" при разгоне.
                 float speed = s.V.Length();
-                float speedRatio = Clamp01(speed / Config.TMax);
+                float speedRatio = Clamp01(speed / Settings.CurrentProfile.TMax);
                 float curve = speedRatio * speedRatio;
                 float targetCents = PITCH_IDLE_CENTS + curve * PITCH_RANGE;
 

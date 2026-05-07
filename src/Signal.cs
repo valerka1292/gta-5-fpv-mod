@@ -128,7 +128,7 @@ namespace FpvDroneMod
                         s.RecoverTimerRealtime = 0;
                     }
                     // Throttle ramps to TMax in autonomous mode (spec 8.3).
-                    s.T = s.T + (Config.TMax - s.T) * Math.Min(1.0f, Config.LostThrottleRamp * dtReal);
+                    s.T = s.T + (Settings.CurrentProfile.TMax - s.T) * Math.Min(1.0f, Config.LostThrottleRamp * dtReal);
                     // Yaw/pitch frozen — caller sets dmx=dmy=0 before calling Apply* funcs.
                     break;
             }
