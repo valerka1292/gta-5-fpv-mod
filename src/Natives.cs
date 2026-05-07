@@ -171,6 +171,18 @@ namespace FpvDroneMod
             return Function.Call<float>(Hash.GET_DISABLED_CONTROL_NORMAL, group, control);
         }
 
+        public static bool GetScreenCoordFromWorldCoord(Vector3 worldPos, out float screenX, out float screenY)
+        {
+            // GET_SCREEN_COORD_FROM_WORLD_COORD returns normalized 0..1 X/Y coordinates.
+            var x = new OutputArgument();
+            var y = new OutputArgument();
+            bool visible = Function.Call<bool>(Hash.GET_SCREEN_COORD_FROM_WORLD_COORD,
+                worldPos.X, worldPos.Y, worldPos.Z, x, y);
+            screenX = x.GetResult<float>();
+            screenY = y.GetResult<float>();
+            return visible;
+        }
+
         // 11.1 ANIMPOSTFX — discrete on/off (M2). No intensity native.
         public static void AnimpostfxPlay(string name, int duration, bool looped)
         {

@@ -29,7 +29,10 @@ namespace FpvDroneMod
             DrawAltitudeTape(s);
 
             if (s.Stage != FlightStage.Lost)
+            {
+                DrawTargetingSystem(s);
                 DrawCenterReticle();
+            }
 
             DrawStatusBanner(s);
             DrawHorizon(s);
@@ -159,6 +162,53 @@ namespace FpvDroneMod
             DrawOsdLine(new PointF(cx - 28f, cy - 1f), new SizeF(12f, 2f), White);
 
             DrawText("O", new PointF(cx - 5.5f, cy - 10f), 0.38f, White);
+        }
+
+        private static void DrawTargetingSystem(DroneState s)
+        {
+            Entity target = s.AutopilotMode == AutoPilotState.Off ? s.PotentialTarget : s.LockedTarget;
+            if (target == null || !target.Exists()) return;
+
+            float screenX, screenY;
+            if (!Natives.GetScreenCoordFromWorldCoord(target.Position, out screenX, out screenY)) return;
+
+            float px = screenX * ScreenW;
+            float py = screenY * ScreenH;
+
+            float boxSize = 30f;
+            Color c = White;
+
+            if (s.AutopilotMode == AutoPilotState.Off)
+            {
+                c = Dim;
+            }
+            else if (s.AutopilotMode == AutoPilotState.Tracking)
+            {
+                c = Red;
+                DrawText("TRK", new PointF(px + boxSize, py - boxSize), 0.3f, Red);
+            }
+            else if (s.AutopilotMode == AutoPilotState.Attacking)
+            {
+                c = Red;
+                boxSize = 20f + (float)Math.Sin(Game.GameTime / 50.0) * 5f;
+                DrawText("TERMINAL", new PointF(px + 20f, py - 20f), 0.3f, Red);
+            }
+
+            float len = 8f;
+            float thick = 2f;
+
+            // Upper-left corner.
+            DrawOsdLine(new PointF(px - boxSize, py - boxSize), new SizeF(len, thick), c);
+            DrawOsdLine(new PointF(px - boxSize, py - boxSize), new SizeF(thick, len), c);
+            // Upper-right corner.
+            DrawOsdLine(new PointF(px + boxSize - len, py - boxSize), new SizeF(len, thick), c);
+            DrawOsdLine(new PointF(px + boxSize, py - boxSize), new SizeF(thick, len), c);
+            // Lower-left corner.
+            DrawOsdLine(new PointF(px - boxSize, py + boxSize), new SizeF(len, thick), c);
+            DrawOsdLine(new PointF(px - boxSize, py + boxSize - len), new SizeF(thick, len), c);
+            // Lower-right corner.
+            DrawOsdLine(new PointF(px + boxSize - len, py + boxSize), new SizeF(len, thick), c);
+            DrawOsdLine(new PointF(px + boxSize, py + boxSize - len), new SizeF(thick, len), c);
         }
 
         private static void DrawStatusBanner(DroneState s)
