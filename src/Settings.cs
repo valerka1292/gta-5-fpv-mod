@@ -107,5 +107,42 @@ namespace FpvDroneMod
                 new ExplosionPreset(34, "GAS TANK")
             })
         };
+
+        // --- Классы дрона ---
+        public struct DroneProfile
+        {
+            public string Label;
+            public float TMax;       // м/с — максимальная скорость
+            public float KInertia;   // отзывчивость (скорость следования за V_target)
+            public float SYaw;       // чувствительность рыскания
+            public float SPitch;     // чувствительность тангажа
+            public float ThetaMax;   // максимальный угол тангажа (рад)
+            public float CDrag;      // коэффициент аэродинамического сопротивления
+        }
+
+        public static int ActiveProfileIndex = 1; // По умолчанию Freestyle
+
+        public static readonly DroneProfile[] DroneProfiles = new DroneProfile[]
+        {
+            // Label            TMax    KInertia  SYaw    SPitch  ThetaMax  CDrag
+            new DroneProfile { Label = "TINY WHOOP",         TMax = 13.9f,  KInertia = 22f, SYaw = 0.12f, SPitch = 0.09f, ThetaMax = 0.7f,  CDrag = 0.045f },
+            new DroneProfile { Label = "FREESTYLE",          TMax = 44.4f,  KInertia = 25f, SYaw = 0.10f, SPitch = 0.08f, ThetaMax = 1.4f,  CDrag = 0.025f },
+            new DroneProfile { Label = "RACING",             TMax = 61.1f,  KInertia = 35f, SYaw = 0.09f, SPitch = 0.08f, ThetaMax = 1.55f, CDrag = 0.020f },
+            new DroneProfile { Label = "CINEMATIC (PRO)",    TMax = 97.2f,  KInertia = 18f, SYaw = 0.05f, SPitch = 0.04f, ThetaMax = 1.0f,  CDrag = 0.018f },
+            new DroneProfile { Label = "INTERCEPTOR",        TMax = 119.4f, KInertia = 42f, SYaw = 0.08f, SPitch = 0.07f, ThetaMax = 1.6f,  CDrag = 0.014f },
+            new DroneProfile { Label = "SPEEDSTER (RECORD)", TMax = 180.6f, KInertia = 50f, SYaw = 0.07f, SPitch = 0.06f, ThetaMax = 1.7f,  CDrag = 0.010f },
+        };
+
+        public static DroneProfile CurrentProfile
+        {
+            get
+            {
+                int idx = ActiveProfileIndex;
+                if (idx < 0) idx = 0;
+                if (idx >= DroneProfiles.Length) idx = DroneProfiles.Length - 1;
+                return DroneProfiles[idx];
+            }
+        }
+
     }
 }

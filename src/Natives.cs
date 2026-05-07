@@ -83,7 +83,8 @@ namespace FpvDroneMod
 
         public static bool IsPedACop(Ped p)
         {
-            return Function.Call<bool>(Hash.IS_PED_A_COP, p.Handle);
+            PedType type = p.PedType;
+            return type == PedType.Cop || type == PedType.Swat || type == PedType.Army;
         }
 
         public static void SetRadarAsExteriorThisFrame()

@@ -44,13 +44,14 @@ namespace FpvDroneMod
         //   dmy > 0 (mouse moved down)  → nose drops, θ decreases.
         public static void ApplyAngularInput(DroneState s, float dmx, float dmy, float dt, FlightStage stage)
         {
+            var prof = Settings.CurrentProfile;
             float scale = dt * 60.0f;
-            float psiRate = -dmx * Config.SYaw * scale;
+            float psiRate = -dmx * prof.SYaw * scale;
             s.Psi += psiRate;
             s.LastPsiRate = psiRate;
 
-            float dTheta = -dmy * Config.SPitch * scale;
-            s.Theta = Clamp(s.Theta + dTheta, -Config.ThetaMax, Config.ThetaMax);
+            float dTheta = -dmy * prof.SPitch * scale;
+            s.Theta = Clamp(s.Theta + dTheta, -prof.ThetaMax, prof.ThetaMax);
 
             // Optional angle-mode style auto-level when pitch input is idle.
             // Disabled by default (AutoLevelStrength = 0) for camera-aim control.
@@ -88,6 +89,7 @@ namespace FpvDroneMod
         // basis from (pitch, roll, yaw) Euler angles — the engine is canonical.
         public static void IntegrateMotion(DroneState s, float vVert, float dt, bool batteryDead)
         {
+            var prof = Settings.CurrentProfile;
             Vector3 F = s.F; // refreshed earlier this tick
 
             // 6.3 V_sink when low battery (only if not fully dead — once dead T=0 anyway)
@@ -102,15 +104,15 @@ namespace FpvDroneMod
             Vector3 vTarget = F * s.T + new Vector3(0, 0, vVert) + vSink;
 
             // 4.6 g_eff
-            float gEff = batteryDead ? Config.GWorld : Config.GWorld * (1.0f - s.T / Config.TMax);
+            float gEff = batteryDead ? Config.GWorld : Config.GWorld * (1.0f - s.T / prof.TMax);
             Vector3 G = new Vector3(0, 0, -gEff);
 
             // 4.7 inertia
-            float kInertia = batteryDead ? Config.KInertiaDead : Config.KInertia;
+            float kInertia = batteryDead ? Config.KInertiaDead : prof.KInertia;
             Vector3 vPhys = Lerp(s.V, vTarget, Clamp01(kInertia * dt)) + G * dt;
 
             // 4.8 quadratic drag: F_drag = -V * C_drag * |V|
-            float cDrag = batteryDead ? Config.CDragDead : Config.CDrag;
+            float cDrag = batteryDead ? Config.CDragDead : prof.CDrag;
             float speed = vPhys.Length();
             Vector3 fDrag = -vPhys * cDrag * speed;
 
@@ -128,14 +130,14 @@ namespace FpvDroneMod
         // 6.1 Battery drain.
         public static void DrainBattery(DroneState s, float dt)
         {
-            float dB = (Config.KBaseDrain + Config.KThrottleDrain * (s.T / Config.TMax)) * dt;
+            float dB = (Config.KBaseDrain + Config.KThrottleDrain * (s.T / Settings.CurrentProfile.TMax)) * dt;
             s.B = Math.Max(s.B - dB, 0.0f);
         }
 
         // T/Y throttle
         public static void AdjustThrottle(DroneState s, float delta)
         {
-            s.T = Clamp(s.T + delta, Config.TMin, Config.TMax);
+            s.T = Clamp(s.T + delta, Config.TMin, Settings.CurrentProfile.TMax);
         }
     }
 }
