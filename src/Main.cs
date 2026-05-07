@@ -246,7 +246,7 @@ namespace FpvDroneMod
             {
                 _slowMo.Update(_state);
                 Hud.Draw(_state, Config.FpvFov);
-                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f), _state.WallsCount);
+                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f));
                 if (_slowMo.ReadyForExit) EndFlight();
                 return;
             }
@@ -498,7 +498,7 @@ namespace FpvDroneMod
 
             // 13.39 Interference effects.
             Effects.Update(_state.I);
-            Effects.DrawOverlays(_state.I, _state.WallsCount);
+            Effects.DrawOverlays(_state.I);
 
             // 13.40 HUD.
             Hud.Draw(_state, Config.FpvFov);

@@ -47,8 +47,8 @@ namespace FpvDroneMod
             }
             else if (s.AutopilotMode == AutoPilotState.Attacking)
             {
-                // Terminal dive: full throttle.
-                s.T = Settings.CurrentProfile.TMax;
+                // Terminal dive: smoothly spool up throttle as if holding T, but twice as aggressively.
+                Physics.AdjustThrottle(s, Config.ThrottleRate * dtReal * 2.0f);
 
                 // Kinetic lead: aim at the predicted intercept point using current closing time.
                 float dist = (targetPos - dronePos).Length();
