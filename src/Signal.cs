@@ -14,7 +14,12 @@ namespace FpvDroneMod
         // multi-ray cost when the cheap probe already shows obstruction.
         public static void RefreshLineOfSight(DroneState s, Ped ignorePed)
         {
-            var ray = World.Raycast(s.Spawn, s.P,
+            // Lift the probe above ground/player feet so low-altitude flight does not
+            // falsely collect every curb or terrain bump as an obstruction.
+            Vector3 losStart = s.Spawn + new Vector3(0f, 0f, 1.0f);
+            Vector3 losEnd = s.P + new Vector3(0f, 0f, 0.2f);
+
+            var ray = World.Raycast(losStart, losEnd,
                                     IntersectFlags.Map | IntersectFlags.Objects,
                                     ignorePed);
             if (!ray.DidHit)
@@ -25,7 +30,7 @@ namespace FpvDroneMod
             else
             {
                 s.LoS = false;
-                s.WallsCount = CountWalls(s.Spawn, s.P, ignorePed);
+                s.WallsCount = CountWalls(losStart, losEnd, ignorePed);
             }
         }
 

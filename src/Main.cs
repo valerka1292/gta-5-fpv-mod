@@ -30,6 +30,8 @@ namespace FpvDroneMod
         private Camera _fpvCam;
         private bool _flying;
         private bool _mouseFirstFrame = true;
+        private bool _lockButtonWasDown;
+        private bool _attackButtonWasDown;
 
         // Realtime stopwatch — used for slow-mo, lost timer, recovery, etc. so
         // we don't depend on Game.LastFrameTime which is in game-time and gets
@@ -86,6 +88,8 @@ namespace FpvDroneMod
             _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
 
             _mouseFirstFrame = true;
+            _lockButtonWasDown = false;
+            _attackButtonWasDown = false;
             MouseCapture.Recenter();
             _flying = true;
             _state.Spooling     = true;
@@ -242,7 +246,7 @@ namespace FpvDroneMod
             {
                 _slowMo.Update(_state);
                 Hud.Draw(_state, Config.FpvFov);
-                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f), _state.WallsCount);
+                Effects.DrawOverlays(Math.Min(1.0f, _state.I + 0.4f));
                 if (_slowMo.ReadyForExit) EndFlight();
                 return;
             }
@@ -307,9 +311,61 @@ namespace FpvDroneMod
             (dmx, dmy) = InputDistortion.Apply(dmx, dmy, _state.I, _state.Stage);
             _state.LastDmx = dmx; _state.LastDmy = dmy;
 
+            // Loitering-munition target search: raycast straight through the FPV reticle.
+            if (_state.AutopilotMode == AutoPilotState.Off)
+            {
+                var targetRay = World.Raycast(_state.P, _state.P + _state.F * 300f,
+                    IntersectFlags.Vehicles | IntersectFlags.PedCapsules, ped);
+                Entity hitEntity = targetRay.DidHit ? targetRay.HitEntity : null;
+                _state.PotentialTarget = hitEntity is Vehicle || (hitEntity is Ped hitPed && hitPed != ped)
+                    ? hitEntity
+                    : null;
+            }
+            else
+            {
+                _state.PotentialTarget = null;
+            }
+
+            // Autopilot controls: RMB toggles lock, LMB starts the terminal attack.
+            bool lockButtonDown = (NativeKey.GetAsyncKeyState(NativeKey.VK_RBUTTON) & 0x8000) != 0;
+            bool attackButtonDown = (NativeKey.GetAsyncKeyState(NativeKey.VK_LBUTTON) & 0x8000) != 0;
+            bool lockPressed = lockButtonDown && !_lockButtonWasDown;
+            bool attackPressed = attackButtonDown && !_attackButtonWasDown;
+            _lockButtonWasDown = lockButtonDown;
+            _attackButtonWasDown = attackButtonDown;
+
+            if (lockPressed)
+            {
+                if (_state.AutopilotMode == AutoPilotState.Off && _state.PotentialTarget != null)
+                {
+                    _state.LockedTarget = _state.PotentialTarget;
+                    _state.AutopilotMode = AutoPilotState.Tracking;
+                    _state.TargetLostTimer = 0f;
+                }
+                else if (_state.AutopilotMode != AutoPilotState.Off)
+                {
+                    _state.AutopilotMode = AutoPilotState.Off;
+                    _state.LockedTarget = null;
+                    _state.TargetLostTimer = 0f;
+                }
+            }
+
+            if (attackPressed && _state.AutopilotMode == AutoPilotState.Tracking)
+            {
+                _state.AutopilotMode = AutoPilotState.Attacking;
+            }
+
             // 13.20-23 Angular update + roll + forward vector.
-            Physics.ApplyAngularInput(_state, dmx, dmy, dtGame, _state.Stage);
-            Physics.UpdateCameraRoll(_state, dmx, dtGame);
+            if (_state.AutopilotMode != AutoPilotState.Off)
+            {
+                Autopilot.Update(_state, dtReal);
+                Physics.UpdateCameraRoll(_state, 0f, dtGame);
+            }
+            else
+            {
+                Physics.ApplyAngularInput(_state, dmx, dmy, dtGame, _state.Stage);
+                Physics.UpdateCameraRoll(_state, dmx, dtGame);
+            }
 
             // Apply the new orientation to the camera FIRST, then read its
             // engine-canonical forward vector. This guarantees physics moves
@@ -442,7 +498,7 @@ namespace FpvDroneMod
 
             // 13.39 Interference effects.
             Effects.Update(_state.I);
-            Effects.DrawOverlays(_state.I, _state.WallsCount);
+            Effects.DrawOverlays(_state.I);
 
             // 13.40 HUD.
             Hud.Draw(_state, Config.FpvFov);
@@ -454,6 +510,9 @@ namespace FpvDroneMod
     // presses, but for held-down vertical movement we want polled state.
     internal static class NativeKey
     {
+        public const int VK_LBUTTON = 0x01;
+        public const int VK_RBUTTON = 0x02;
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern short GetAsyncKeyState(int vKey);
     }

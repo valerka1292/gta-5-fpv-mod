@@ -56,22 +56,20 @@ namespace FpvDroneMod
         private static float _vSyncRollY = 0f;
         private static float _blackoutUntil = 0f;
 
-        public static void DrawOverlays(float I, int walls)
+        public static void DrawOverlays(float I)
         {
-            if (I < 0.02f && walls == 0) return;
+            if (I <= 0.05f) return;
 
-            DrawAnalogStatic(I, walls);
+            DrawAnalogStatic(I);
 
-            // Multipathing from signal reflections off walls creates heavy frame tearing.
-            if (walls > 0 || I > 0.3f)
+            if (I > 0.35f)
             {
-                DrawMultipathTearing(I, walls);
-                if (I > 0.4f || walls > 1) DrawChromaShift(I, walls);
+                DrawMultipathTearing(I);
             }
 
-            // Vertical sync loss: a rolling frame band.
-            if (I > 0.5f)
+            if (I > 0.50f)
             {
+                DrawChromaShift(I);
                 DrawVSyncRoll(I);
             }
 
@@ -82,13 +80,13 @@ namespace FpvDroneMod
         }
 
         // 11.1 Analog white noise: horizontal strokes instead of square pixels.
-        private static void DrawAnalogStatic(float I, int walls)
+        private static void DrawAnalogStatic(float I)
         {
             // Fewer elements, longer lines: cheaper for CPU and closer to analog static.
-            int count = (int)(I * 120) + (walls * 15);
+            int count = (int)(I * 200);
             if (count > 200) count = 200;
 
-            int baseAlpha = (int)(30 + I * 100);
+            int baseAlpha = (int)(10 + I * 150);
 
             for (int i = 0; i < count; i++)
             {
@@ -104,10 +102,10 @@ namespace FpvDroneMod
             }
         }
 
-        // 11.2 Multipathing: flickering horizontal tearing from obstacles.
-        private static void DrawMultipathTearing(float I, int walls)
+        // 11.2 Multipathing: flickering horizontal tearing from degraded signal.
+        private static void DrawMultipathTearing(float I)
         {
-            int bands = (int)(walls * 1.5f) + (int)(I * 4f);
+            int bands = (int)(I * 10f);
             if (bands > 10) bands = 10;
 
             for (int i = 0; i < bands; i++)
@@ -118,7 +116,7 @@ namespace FpvDroneMod
                 float y = (float)Rng.NextDouble() * H;
                 float h = 4f + (float)Rng.NextDouble() * 30f;
 
-                int alpha = (int)(30 + I * 60 + walls * 20);
+                int alpha = (int)(I * I * 250);
                 alpha = Math.Min(220, alpha);
                 Color c = Color.FromArgb(alpha, 180, 180, 190);
 
@@ -127,9 +125,9 @@ namespace FpvDroneMod
         }
 
         // 11.3 Chroma loss: magenta and green artifact bands.
-        private static void DrawChromaShift(float I, int walls)
+        private static void DrawChromaShift(float I)
         {
-            float chance = (I * 1.5f) + (walls * 0.1f);
+            float chance = I * 1.5f;
             if (Rng.NextDouble() > chance) return;
 
             float y = (float)Rng.NextDouble() * H;

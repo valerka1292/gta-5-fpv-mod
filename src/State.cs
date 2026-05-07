@@ -1,3 +1,4 @@
+using GTA;
 using GTA.Math;
 
 namespace FpvDroneMod
@@ -14,6 +15,13 @@ namespace FpvDroneMod
         Normal,
         Thermal,
         NightVision
+    }
+
+    internal enum AutoPilotState
+    {
+        Off,
+        Tracking,
+        Attacking
     }
 
     // Vector state from spec section 3.
@@ -33,6 +41,12 @@ namespace FpvDroneMod
         public int WallsCount;       // number of walls between spawn and drone
         public FlightStage Stage = FlightStage.Controlled;
         public VisionMode Vision = VisionMode.Normal;
+
+        // Loitering munition autopilot target-lock state.
+        public AutoPilotState AutopilotMode = AutoPilotState.Off;
+        public Entity PotentialTarget = null;
+        public Entity LockedTarget = null;
+        public float TargetLostTimer = 0f;
 
         public Vector3 Spawn;        // P_spawn
 
