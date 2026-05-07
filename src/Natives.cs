@@ -70,6 +70,22 @@ namespace FpvDroneMod
             return Function.Call<int>(Hash.GET_PLAYER_WANTED_LEVEL, pl.Handle);
         }
 
+        public static void TaskShootAtCoord(Ped p, Vector3 pos, int durationMs, uint firingPattern)
+        {
+            Function.Call(Hash.TASK_SHOOT_AT_COORD,
+                p.Handle, pos.X, pos.Y, pos.Z, durationMs, firingPattern);
+        }
+
+        public static void TaskReactAndFlee(Ped p, Ped target)
+        {
+            Function.Call(Hash.TASK_REACT_AND_FLEE_PED, p.Handle, target.Handle);
+        }
+
+        public static bool IsPedACop(Ped p)
+        {
+            return Function.Call<bool>(Hash.IS_PED_A_COP, p.Handle);
+        }
+
         public static void SetRadarAsExteriorThisFrame()
         {
             Function.Call(Hash.SET_RADAR_AS_EXTERIOR_THIS_FRAME);
