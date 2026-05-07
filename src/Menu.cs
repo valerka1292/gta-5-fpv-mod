@@ -26,7 +26,7 @@ namespace FpvDroneMod
             if (_open)
             {
                 _state = MenuState.CategoryView;
-                _currentCategoryIndex = -2;
+                _currentCategoryIndex = -3;
                 _currentPayloadIndex = 0;
 
                 // Если телефон открыт - закрываем его нафиг
@@ -48,7 +48,7 @@ namespace FpvDroneMod
                     if (_state == MenuState.CategoryView)
                     {
                         _currentCategoryIndex--;
-                        if (_currentCategoryIndex < -2)
+                        if (_currentCategoryIndex < -3)
                             _currentCategoryIndex = Settings.Categories.Length - 1;
                     }
                     else
@@ -63,7 +63,7 @@ namespace FpvDroneMod
                     {
                         _currentCategoryIndex++;
                         if (_currentCategoryIndex >= Settings.Categories.Length)
-                            _currentCategoryIndex = -2;
+                            _currentCategoryIndex = -3;
                     }
                     else
                     {
@@ -75,7 +75,14 @@ namespace FpvDroneMod
                 case Keys.Enter:
                     if (_state == MenuState.CategoryView)
                     {
-                        if (_currentCategoryIndex == -2)
+                        if (_currentCategoryIndex == -3)
+                        {
+                            int impulseIdx = Settings.ImpulseScaleIndex;
+                            if (impulseIdx < 0) impulseIdx = 0;
+                            if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                            Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulseMultipliers.Length;
+                        }
+                        else if (_currentCategoryIndex == -2)
                         {
                             Settings.GiveStars = !Settings.GiveStars;
                         }
@@ -98,6 +105,16 @@ namespace FpvDroneMod
                     return true;
 
                 case Keys.Left:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -3)
+                    {
+                        int impulseIdx = Settings.ImpulseScaleIndex;
+                        if (impulseIdx < 0) impulseIdx = 0;
+                        if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                        impulseIdx--;
+                        if (impulseIdx < 0) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                        Settings.ImpulseScaleIndex = impulseIdx;
+                        return true;
+                    }
                     if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
                     {
                         Settings.DamageOverrideIndex--;
@@ -108,6 +125,14 @@ namespace FpvDroneMod
                     return false;
 
                 case Keys.Right:
+                    if (_state == MenuState.CategoryView && _currentCategoryIndex == -3)
+                    {
+                        int impulseIdx = Settings.ImpulseScaleIndex;
+                        if (impulseIdx < 0) impulseIdx = 0;
+                        if (impulseIdx >= Settings.ImpulseMultipliers.Length) impulseIdx = Settings.ImpulseMultipliers.Length - 1;
+                        Settings.ImpulseScaleIndex = (impulseIdx + 1) % Settings.ImpulseMultipliers.Length;
+                        return true;
+                    }
                     if (_state == MenuState.CategoryView && _currentCategoryIndex == -1)
                     {
                         Settings.DamageOverrideIndex = (Settings.DamageOverrideIndex + 1) % Settings.DamageValues.Length;
@@ -144,7 +169,7 @@ namespace FpvDroneMod
             const float padBot = 10f;
 
             int rows = _state == MenuState.CategoryView
-                ? Settings.Categories.Length + 2
+                ? Settings.Categories.Length + 3
                 : Settings.Categories[_currentCategoryIndex].Presets.Length;
 
             float menuH = headerH + rows * rowH + padBot;
@@ -163,28 +188,52 @@ namespace FpvDroneMod
 
             if (_state == MenuState.CategoryView)
             {
-                float starsY = y + headerH + 4f;
+                float forceY = y + headerH + 4f;
+                bool forceSelected = _currentCategoryIndex == -3;
+                Color forceColor = forceSelected ? Color.Black : Color.White;
+
+                if (forceSelected)
+                {
+                    new ContainerElement(
+                        new PointF(x, forceY - 2f),
+                        new SizeF(menuW, rowH),
+                        Color.FromArgb(180, 100, 180, 100)).Draw();
+                }
+
+                int impulseIdx = Settings.ImpulseScaleIndex;
+                if (impulseIdx < 0) impulseIdx = 0;
+                if (impulseIdx >= Settings.ImpulseLabels.Length) impulseIdx = Settings.ImpulseLabels.Length - 1;
+
+                new TextElement("FORCE (IMPULSE)",
+                    new PointF(x + 10f, forceY), 0.38f,
+                    forceColor, Font.ChaletLondon).Draw();
+
+                new TextElement($"<  {Settings.ImpulseLabels[impulseIdx]}  >",
+                    new PointF(x + 290f, forceY), 0.38f,
+                    forceColor, Font.ChaletLondon).Draw();
+
+                float starsRowY = forceY + rowH;
                 bool starsSelected = _currentCategoryIndex == -2;
                 Color starsColor = starsSelected ? Color.Black : Color.White;
 
                 if (starsSelected)
                 {
                     new ContainerElement(
-                        new PointF(x, starsY - 2f),
+                        new PointF(x, starsRowY - 2f),
                         new SizeF(menuW, rowH),
                         Color.FromArgb(180, 100, 180, 100)).Draw();
                 }
 
                 new TextElement("WANTED STARS",
-                    new PointF(x + 10f, starsY), 0.38f,
+                    new PointF(x + 10f, starsRowY), 0.38f,
                     starsColor, Font.ChaletLondon).Draw();
 
                 string starsValue = Settings.GiveStars ? "ENABLED" : "DISABLED";
                 new TextElement($"<  {starsValue}  >",
-                    new PointF(x + 290f, starsY), 0.38f,
+                    new PointF(x + 290f, starsRowY), 0.38f,
                     starsColor, Font.ChaletLondon).Draw();
 
-                float damageY = starsY + rowH;
+                float damageY = starsRowY + rowH;
                 bool damageSelected = _currentCategoryIndex == -1;
                 Color damageColor = damageSelected ? Color.Black : Color.White;
 
@@ -210,7 +259,7 @@ namespace FpvDroneMod
 
                 for (int i = 0; i < Settings.Categories.Length; i++)
                 {
-                    float ry = y + headerH + 4f + (i + 2) * rowH;
+                    float ry = y + headerH + 4f + (i + 3) * rowH;
                     Color textColor = i == _currentCategoryIndex ? Color.Black : Color.White;
 
                     if (i == _currentCategoryIndex)

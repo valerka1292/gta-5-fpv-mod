@@ -25,6 +25,11 @@ namespace FpvDroneMod
         public static int DamageOverrideIndex = 7; // По умолчанию 1000 HP
         public static readonly float[] DamageValues = { 0, 50, 100, 200, 400, 600, 800, 1000, 1500, 2000, 3000, 5000 };
 
+        // --- Настройка силы физического импульса ---
+        public static int ImpulseScaleIndex = 2; // По умолчанию 1.0x (Normal)
+        public static readonly float[] ImpulseMultipliers = { 0.0f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 25.0f, 50.0f };
+        public static readonly string[] ImpulseLabels = { "OFF", "WEAK", "NORMAL", "STRONG", "POWERFUL", "BATTLEFIELD", "SUPER", "EXTREME" };
+
         public static ExplosionPreset ActivePayload = new ExplosionPreset(0, "GRENADE");
 
         public static int CurrentExplosionId => ActivePayload.Id;
