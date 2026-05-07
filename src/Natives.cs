@@ -87,6 +87,29 @@ namespace FpvDroneMod
             return type == PedType.Cop || type == PedType.Swat || type == PedType.Army;
         }
 
+        public static Ped GetClosestPed(Vector3 position, float radius)
+        {
+            return GetClosestPedByType(position, radius, -1);
+        }
+
+        public static Ped GetClosestCop(Vector3 position, float radius)
+        {
+            return GetClosestPedByType(position, radius, (int)PedType.Cop);
+        }
+
+        private static Ped GetClosestPedByType(Vector3 position, float radius, int pedType)
+        {
+            var outPed = new OutputArgument();
+            bool found = Function.Call<bool>(Hash.GET_CLOSEST_PED,
+                position.X, position.Y, position.Z, radius,
+                true, true, outPed, false, false, pedType);
+            if (!found) return null;
+
+            int handle = outPed.GetResult<int>();
+            if (handle == 0) return null;
+            return Entity.FromHandle(handle) as Ped;
+        }
+
         public static void SetRadarAsExteriorThisFrame()
         {
             Function.Call(Hash.SET_RADAR_AS_EXTERIOR_THIS_FRAME);
