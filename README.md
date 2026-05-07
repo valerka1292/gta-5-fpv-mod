@@ -1,91 +1,120 @@
-# FPV Kamikaze Drone — GTA 5 SP Mod
+# GTA 5 FPV Drone Mod
 
-A first-person FPV kamikaze drone simulator for GTA 5 single-player. The drone
-is a virtual point in space (no physics body): camera attached as FPV goggles,
-mouse + keyboard control, finite battery, radio-signal range with interference
-degradation, slow-motion cinematic on impact, grenade-type explosion.
+FPV Drone Mod добавляет в одиночный режим GTA V управляемый FPV-дрон с видом от первого лица, ограниченной батареей, помехами сигнала, звуком мотора и настраиваемой полезной нагрузкой.
 
-Implements the v2.0 spec including all safety guards from the audit:
-- Player teleported to drone position every frame, but with collision off /
-  invincible / alpha 100 (visible ghost).
-- All raycasts ignore the player ped (so the drone doesn't self-hit).
-- `ADD_EXPLOSION` without an owner — no wanted level for the drone strike.
-- All three control groups blocked, mouse read via `GET_DISABLED_CONTROL_NORMAL`.
-- `try/finally` around `SET_TIME_SCALE` and aborted-handler reset.
-- All slow-mo / lost-signal / recovery timers measured in realtime
-  (`Stopwatch`), separated from physics `dt_game`.
-- Explicit `× 180/π` conversion for `Camera.Rotation` (degrees).
+Мод сделан для свободного полёта по Лос-Сантосу: можно стартовать рядом с персонажем, управлять дроном мышью и клавиатурой, выбирать тип взрыва, силу физического импульса и поведение розыска.
 
-## Install (precompiled)
+## Возможности
 
-A prebuilt DLL for **ScriptHookVDotNet v3.7.0-nightly.81** lives in
-[`release/FpvDroneMod.dll`](release/FpvDroneMod.dll). Drop it into your GTA V
-`scripts/` folder and launch.
+- Вид от первого лица с отдельной камерой дрона.
+- Управление мышью, газом и вертикальным движением.
+- Батарея, потеря сигнала на большой дистанции и визуальные помехи.
+- Звук запуска и полёта дрона с изменением тона от скорости.
+- Замедление времени перед столкновением.
+- Меню выбора полезной нагрузки, урона, импульса и звёзд розыска.
+- Автоматическое отключение в мультиплеере.
 
-### Минимум, что нужно скачать для запуска
+## Требования
 
-Если нужен только базовый минимум (без мод-менеджеров и лишних пакетов):
+- GTA V для ПК.
+- Script Hook V.
+- ScriptHookVDotNet v3.7.0-nightly.81 или совместимая версия v3.
+- .NET Framework 4.8.
 
-1. **Script Hook V** (Alexander Blade) — чтобы работали ASI-скрипты в GTA V.
-2. **ScriptHookVDotNet v3** — нужны как минимум `ScriptHookVDotNet.asi` и
-   `ScriptHookVDotNet3.dll` в корне GTA V.
-3. **Этот мод** — `FpvDroneMod.dll` в папку `scripts/`.
+## Установка
 
-Итоговая структура:
+1. Установите Script Hook V в корень GTA V.
+2. Установите ScriptHookVDotNet v3: в корне игры должны быть `ScriptHookVDotNet.asi` и `ScriptHookVDotNet3.dll`.
+3. Создайте папку `scripts`, если её ещё нет.
+4. Скопируйте `release/FpvDroneMod.dll` в папку `scripts`.
+5. Запустите GTA V в одиночном режиме.
 
-- `GTA5.exe`
-- `ScriptHookV.dll`
-- `dinput8.dll` (из Script Hook V)
-- `ScriptHookVDotNet.asi`
-- `ScriptHookVDotNet3.dll`
-- `scripts/FpvDroneMod.dll`
+Итоговая структура должна выглядеть примерно так:
 
-## Build from source
+```text
+Grand Theft Auto V/
+├─ GTA5.exe
+├─ dinput8.dll
+├─ ScriptHookV.dll
+├─ ScriptHookVDotNet.asi
+├─ ScriptHookVDotNet3.dll
+└─ scripts/
+   └─ FpvDroneMod.dll
+```
 
-Requires **.NET Framework 4.8** target. Either:
+Файл `release/FpvDroneMod.pdb` копировать не обязательно. Он нужен только для более подробных логов при отладке.
 
-- **Windows / Visual Studio 2022:** open the `.csproj` and build.
-- **Cross-platform via .NET SDK 8 + reference assemblies:**
-  ```
-  dotnet build FpvDroneMod.csproj -c Release
-  ```
-  The csproj uses `Microsoft.NETFramework.ReferenceAssemblies` so it compiles on
-  Linux/macOS without a Windows SDK.
+## Управление
 
-The output `FpvDroneMod.dll` goes into your GTA V `scripts/` folder alongside
-`ScriptHookVDotNet3.asi` / `ScriptHookVDotNet3.dll`.
+| Действие | Клавиша |
+| --- | --- |
+| Запустить дрон / выйти из режима дрона | `G` |
+| Аварийно завершить полёт | `H` |
+| Поворот и наклон камеры | Мышь |
+| Увеличить / уменьшить газ | `T` / `Y` |
+| Подъём / снижение | `Page Up` / `Page Down` |
+| Открыть меню настроек | `F9` |
+| Перемещение по меню | `↑` / `↓` |
+| Изменить значение в меню | `←` / `→` |
+| Подтвердить выбор | `Enter` |
+| Назад | `Backspace` |
+| Закрыть меню | `F9` или `Esc` |
 
-`libs/ScriptHookVDotNet3.dll` and `.xml` are bundled for build-time reference
-only (currently v3.7.0-nightly.81). They are NOT copied to the output
-(`Private=False`).
+Меню настроек открывается только когда дрон не запущен.
 
-## Controls
+## Настройки в игре
 
-| Action | Key |
-|---|---|
-| Launch / exit | **G** |
-| Emergency exit | **H** |
-| Yaw / pitch | Mouse |
-| Throttle + / − | **T** / **Y** |
-| Vertical + / − | **PgUp** / **PgDn** |
-| Settings menu (only when not flying) | **F9** |
-| Menu navigation | **↑ / ↓** select, **← / →** change |
-| Menu close | **F9 / Esc** |
+В меню `F9` можно настроить:
 
-### Settings menu
+- **Force (Impulse)** — сила физического толчка от удара и взрыва.
+- **Wanted Stars** — включить или отключить получение звёзд розыска после взрыва.
+- **Damage (HP)** — значение урона.
+- **Payload** — тип полезной нагрузки: граната, RPG, танковый снаряд, мины, авиационные бомбы, топливные взрывы и другие варианты из GTA V.
 
-| Item | Description |
-|---|---|
-| Explosion type | Cycles through 9 stock GTA explosion presets — Grenade (id 0), Grenade Launcher (1), Sticky Bomb (2), Rocket / RPG (4), Tank Shell (5), Car (7), Plane (8), Petrol Pump (9), Blimp (29). Picked value applies to the next impact. |
+Выбранные параметры применяются к следующему запуску дрона.
 
-## Limitations
+## Сборка из исходников
 
-- Single-player only (auto-disables in MP).
-- Audio is intentionally not implemented in this revision (per request).
-- Custom shader effects (true chromatic aberration, scanlines) are
-  approximated via stock `ANIMPOSTFX` presets + `UIRectangle` overlays —
-  there is no shader hook in ScriptHookVDotNet.
-- Cops / NPCs can see the visible ghost player and react/shoot, but invincible
-  + collision-off means damage doesn't apply. `WANTED_LEVEL_MULTIPLIER = 0`
-  prevents new wanted while flying. This is intentional — adds atmosphere of
-  flying under fire.
+Проект собирается как библиотека под .NET Framework 4.8.
+
+### Windows / Visual Studio
+
+Откройте `FpvDroneMod.csproj` в Visual Studio 2022 и соберите проект в конфигурации `Release`.
+
+### Через .NET SDK
+
+```bash
+dotnet build FpvDroneMod.csproj -c Release
+```
+
+После сборки скопируйте получившийся `FpvDroneMod.dll` в папку `scripts` внутри GTA V.
+
+В репозитории уже лежит `libs/ScriptHookVDotNet3.dll` для сборки. В игру его нужно устанавливать отдельно вместе с ScriptHookVDotNet.
+
+## Частые проблемы
+
+**Дрон не запускается.**
+
+Проверьте, что игра запущена в одиночном режиме, персонаж не находится в транспорте, кат-сцене, воде или под неподходящим укрытием.
+
+**Мод не загружается.**
+
+Проверьте установку Script Hook V и ScriptHookVDotNet v3, а также путь к файлу: `Grand Theft Auto V/scripts/FpvDroneMod.dll`.
+
+**Нет звука дрона.**
+
+Убедитесь, что используется актуальная сборка мода. Звуки и необходимые BASS-библиотеки встроены в DLL при сборке проекта.
+
+**После обновления GTA V мод перестал работать.**
+
+Обычно нужно дождаться обновления Script Hook V и затем заменить его файлы в папке игры.
+
+## Ограничения
+
+- Мод предназначен только для одиночной игры.
+- В мультиплеере скрипт не запускается.
+- Для работы нужны Script Hook V и ScriptHookVDotNet.
+
+## Дисклеймер
+
+Используйте мод на свой риск и не запускайте его в GTA Online. Перед установкой любых модов лучше сделать резервную копию важных файлов игры.
