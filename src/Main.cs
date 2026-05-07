@@ -366,6 +366,9 @@ namespace FpvDroneMod
             _state.MahUsed += currentAmps * dtReal / 3.6f;        // А·с → мАч
             Physics.IntegrateMotion(_state, vVert, dtGame, batteryDead);
 
+            // NPC reaction: panic, wanted escalation, cop suppressive fire.
+            NpcReaction.Update(_state, ped, player, dtReal);
+
             // 13.31-33 Swept-volume contact ray (prevP → curP + margin).
             var (outcome, hit, hitNormal, hitEntity, speed) = Collision.Step(_state, prevP, dtGame, ped);
             if (outcome == Collision.Outcome.ImpactNow)

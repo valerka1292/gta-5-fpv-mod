@@ -65,6 +65,11 @@ namespace FpvDroneMod
         public float FlightTimerReal = 0f;   // секунды с момента запуска
         public float MahUsed         = 0f;   // израсходованная ёмкость, мАч
 
+        // NPC-реакция
+        public float NpcHoverTimer    = 0f;  // сек — сколько дрон висит над пешеходом
+        public float CopShootTimer    = 0f;  // сек — таймер кадения стрельбы копов
+        public float PanicCooldown    = 0f;  // сек — антиспам паники пешеходов
+
         // Slow-mo banner flag (set by Main when Collision.Outcome.ImpactImminent fires)
         public bool ImpactImminent;
     }
