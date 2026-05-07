@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using GTA;
 using GTA.Math;
 
@@ -25,6 +26,9 @@ namespace FpvDroneMod
         // 0xC6EE5C40 = FIRING_PATTERN_BURST_FIRE (стреляет короткими очередями)
         private const uint  CopFiringPattern  = 0xC6EE5C40;
 
+        private static readonly Model[] NoModelFilter = new Model[0];
+        private static readonly Ped[] NoPeds = new Ped[0];
+
         public static void Update(DroneState s, Ped playerPed, Player player, float dtReal)
         {
             float altAgl = GetAltAgl(s.P);
@@ -47,7 +51,7 @@ namespace FpvDroneMod
                 return;
             }
 
-            Ped[] nearby = World.GetNearbyPeds(s.P, PanicRadius);
+            Ped[] nearby = GetNearbyPedsSafe(s.P, PanicRadius);
             if (nearby == null || nearby.Length == 0)
             {
                 s.NpcHoverTimer = 0f;
@@ -99,7 +103,7 @@ namespace FpvDroneMod
             // Стрельба только если есть розыск
             if (Natives.GetWantedLevel(Game.Player) == 0) return;
 
-            Ped[] nearby = World.GetNearbyPeds(s.P, CopShootRadius);
+            Ped[] nearby = GetNearbyPedsSafe(s.P, CopShootRadius);
             if (nearby == null) return;
 
             foreach (var p in nearby)
@@ -116,6 +120,61 @@ namespace FpvDroneMod
             }
 
             s.CopShootTimer = CopShootInterval;
+        }
+
+        private static Ped[] GetNearbyPedsSafe(Vector3 position, float radius)
+        {
+            try
+            {
+                // Pass an explicit empty model filter instead of using the
+                // optional parameter. Some SHVDN builds can pass a null model
+                // hash array into NativeMemory.GetGuidsInFwBasePool, which may
+                // throw inside the game-thread pool task and abort the script.
+                return World.GetNearbyPeds(position, radius, NoModelFilter) ?? NoPeds;
+            }
+            catch (NullReferenceException)
+            {
+                return GetNearbyPedsFallback(position, radius);
+            }
+            catch
+            {
+                // NPC reactions are non-critical; never let a transient SHVDN
+                // pool/enumeration failure terminate the drone script.
+                return NoPeds;
+            }
+        }
+
+        private static Ped[] GetNearbyPedsFallback(Vector3 position, float radius)
+        {
+            try
+            {
+                Ped[] all = World.GetAllPeds(NoModelFilter);
+                if (all == null || all.Length == 0) return NoPeds;
+
+                float radiusSq = radius * radius;
+                var nearby = new List<Ped>();
+
+                foreach (var p in all)
+                {
+                    try
+                    {
+                        if (p == null || !p.Exists()) continue;
+                        if ((p.Position - position).LengthSquared() > radiusSq) continue;
+
+                        nearby.Add(p);
+                    }
+                    catch
+                    {
+                        // Peds can despawn while the pool is being inspected.
+                    }
+                }
+
+                return nearby.Count == 0 ? NoPeds : nearby.ToArray();
+            }
+            catch
+            {
+                return NoPeds;
+            }
         }
 
         private static float GetAltAgl(Vector3 p)
