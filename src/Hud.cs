@@ -30,8 +30,7 @@ namespace FpvDroneMod
 
             if (s.Stage != FlightStage.Lost)
             {
-                DrawTargetingSystem(s);
-                DrawCenterReticle();
+                DrawCenterReticle(s);
             }
 
             DrawStatusBanner(s);
@@ -154,61 +153,69 @@ namespace FpvDroneMod
             DrawText("ALT", new PointF(x + 12f, cy + TAPE_ROWS * ROW_H + 5f), 0.25f, White);
         }
 
-        private static void DrawCenterReticle()
+        private static void DrawCenterReticle(DroneState s)
         {
             float cx = ScreenW * 0.5f;
             float cy = ScreenH * 0.5f;
 
-            DrawOsdLine(new PointF(cx - 28f, cy - 1f), new SizeF(12f, 2f), White);
+            Color reticleColor = White;
+            string statusText = "";
+            float dist = 0f;
 
-            DrawText("O", new PointF(cx - 5.5f, cy - 10f), 0.38f, White);
+            // Определяем цвет прицела и текст дистанции.
+            if (s.AutopilotMode == AutoPilotState.Tracking && s.LockedTarget != null && s.LockedTarget.Exists())
+            {
+                reticleColor = Red;
+                dist = (s.P - s.LockedTarget.Position).Length();
+                statusText = $"TRK {FormatDistance(dist)}";
+            }
+            else if (s.AutopilotMode == AutoPilotState.Attacking && s.LockedTarget != null && s.LockedTarget.Exists())
+            {
+                // Мигающий красный при атаке.
+                reticleColor = (Game.GameTime % 200 < 100) ? Red : White;
+                dist = (s.P - s.LockedTarget.Position).Length();
+                statusText = $"ATK {FormatDistance(dist)}";
+            }
+            else if (s.PotentialTarget != null && s.PotentialTarget.Exists())
+            {
+                dist = (s.P - s.PotentialTarget.Position).Length();
+                statusText = $"TGT {FormatDistance(dist)}";
+            }
+
+            // 1. Левая линия (—).
+            DrawOsdLine(new PointF(cx - 26f, cy - 1f), new SizeF(12f, 2f), reticleColor);
+
+            // 2. Идеальный OSD-круг по центру (○).
+            float r = 6f;
+            for (int i = 0; i < 12; i++)
+            {
+                double a1 = i * (Math.PI * 2 / 12);
+                double a2 = (i + 1) * (Math.PI * 2 / 12);
+                float x1 = cx + (float)Math.Cos(a1) * r;
+                float y1 = cy + (float)Math.Sin(a1) * r;
+                float x2 = cx + (float)Math.Cos(a2) * r;
+                float y2 = cy + (float)Math.Sin(a2) * r;
+                DrawOsdLine(new PointF(x1, y1), new SizeF(Math.Max(1.5f, Math.Abs(x2 - x1)), Math.Max(1.5f, Math.Abs(y2 - y1))), reticleColor);
+            }
+
+            // 3. Вывод статуса и дистанции справа от прицела.
+            if (!string.IsNullOrEmpty(statusText))
+            {
+                DrawText(statusText, new PointF(cx + 14f, cy - 8f), 0.3f, reticleColor);
+            }
         }
 
-        private static void DrawTargetingSystem(DroneState s)
+        // Умное форматирование дистанции.
+        private static string FormatDistance(float meters)
         {
-            Entity target = s.AutopilotMode == AutoPilotState.Off ? s.PotentialTarget : s.LockedTarget;
-            if (target == null || !target.Exists()) return;
+            if (meters >= 1000f)
+                return $"{meters / 1000f:F2}km";
+            if (meters >= 1f)
+                return $"{meters:F1}m";
+            if (meters >= 0.01f)
+                return $"{meters * 100f:F0}cm";
 
-            float screenX, screenY;
-            if (!Natives.GetScreenCoordFromWorldCoord(target.Position, out screenX, out screenY)) return;
-
-            float px = screenX * ScreenW;
-            float py = screenY * ScreenH;
-
-            float boxSize = 30f;
-            Color c = White;
-
-            if (s.AutopilotMode == AutoPilotState.Off)
-            {
-                c = Dim;
-            }
-            else if (s.AutopilotMode == AutoPilotState.Tracking)
-            {
-                c = Red;
-                DrawText("TRK", new PointF(px + boxSize, py - boxSize), 0.3f, Red);
-            }
-            else if (s.AutopilotMode == AutoPilotState.Attacking)
-            {
-                c = Red;
-                boxSize = 20f + (float)Math.Sin(Game.GameTime / 50.0) * 5f;
-                DrawText("TERMINAL", new PointF(px + 20f, py - 20f), 0.3f, Red);
-            }
-
-            float len = 8f;
-            float thick = 2f;
-
-            // Upper-left corner.
-            DrawOsdLine(new PointF(px - boxSize, py - boxSize), new SizeF(len, thick), c);
-            DrawOsdLine(new PointF(px - boxSize, py - boxSize), new SizeF(thick, len), c);
-            // Upper-right corner.
-            DrawOsdLine(new PointF(px + boxSize - len, py - boxSize), new SizeF(len, thick), c);
-            DrawOsdLine(new PointF(px + boxSize, py - boxSize), new SizeF(thick, len), c);
-            // Lower-left corner.
-            DrawOsdLine(new PointF(px - boxSize, py + boxSize), new SizeF(len, thick), c);
-            DrawOsdLine(new PointF(px - boxSize, py + boxSize - len), new SizeF(thick, len), c);
-            // Lower-right corner.
-            DrawOsdLine(new PointF(px + boxSize - len, py + boxSize), new SizeF(len, thick), c);
-            DrawOsdLine(new PointF(px + boxSize, py + boxSize - len), new SizeF(thick, len), c);
+            return $"{meters * 1000f:F0}mm";
         }
 
         private static void DrawStatusBanner(DroneState s)

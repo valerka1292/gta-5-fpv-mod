@@ -316,9 +316,9 @@ namespace FpvDroneMod
             {
                 var targetRay = World.Raycast(_state.P, _state.P + _state.F * 300f,
                     IntersectFlags.Vehicles | IntersectFlags.PedCapsules, ped);
-                Entity hitEntity = targetRay.DidHit ? targetRay.HitEntity : null;
-                _state.PotentialTarget = hitEntity is Vehicle || (hitEntity is Ped hitPed && hitPed != ped)
-                    ? hitEntity
+                Entity aimEntity = targetRay.DidHit ? targetRay.HitEntity : null;
+                _state.PotentialTarget = aimEntity is Vehicle || (aimEntity is Ped aimPed && aimPed != ped)
+                    ? aimEntity
                     : null;
             }
             else
