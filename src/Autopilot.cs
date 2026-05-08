@@ -40,6 +40,9 @@ namespace FpvDroneMod
         private const float AttackAimSpeedSoft = 3.5f;
         private const float AttackAimSpeedHard = 7.0f;
         private const float AttackAimBlendDeg  = 20f;  // порог переключения
+        private const float AttackMaxTti        = 5.0f; // c — ограничение упреждения
+        private const float AttackBrakeDist     = 20f;  // м — начало торможения
+        private const float AttackMinSpeedFrac  = 0.40f; // не ниже 40% в атаке
 
         // ── LoS ───────────────────────────────────────────────────────────
         private const float LosDropTime = 2.0f;
@@ -155,34 +158,47 @@ namespace FpvDroneMod
         private static void UpdateAttacking(
             DroneState s, Vector3 tgtPos, float dtReal)
         {
-            // Плавный набор газа — как будто зажат T.
-            Physics.AdjustThrottle(s, Config.ThrottleRate * dtReal);
-
             // Упреждение: вычислить точку встречи.
             Vector3 toTgt = tgtPos - s.P;
             float   dist  = toTgt.Length();
             if (dist <= 0.001f) return;
 
             Vector3 dirToTgt = toTgt / dist;
-            float closing = Vector3.Dot(s.V - s.LockedTarget.Velocity, dirToTgt);
-            if (closing < 3f) closing = 3f;
-            float tti = dist / closing;
+            Vector3 relVel = IsFiniteVec(s.V) ? s.V - s.LockedTarget.Velocity : -s.LockedTarget.Velocity;
+            float closing = Vector3.Dot(relVel, dirToTgt);
 
-            Vector3 predictedPos = tgtPos + s.LockedTarget.Velocity * tti;
-            Vector3 aimVec = predictedPos - s.P;
-            if (aimVec.LengthSquared() < 0.001f) return;
-            Vector3 aimDir = Vector3.Normalize(aimVec);
+            Vector3 aimDir;
+            if (closing <= 0.5f)
+            {
+                // Если не сближаемся, целимся в текущую позицию —
+                // длинное упреждение только уводит дрон мимо цели.
+                aimDir = dirToTgt;
+            }
+            else
+            {
+                float tti = Math.Min(dist / closing, AttackMaxTti);
+                Vector3 predictedPos = tgtPos + s.LockedTarget.Velocity * tti;
+                Vector3 aimVec = predictedPos - s.P;
+                aimDir = aimVec.LengthSquared() > 0.001f ? Vector3.Normalize(aimVec) : dirToTgt;
+            }
 
             // Мягкий старт: когда нос ещё далеко от цели — сначала разворачиваемся
             // плавно, потом жёстче когда уже почти наведено.
             float dotForward = Vector3.Dot(s.F, aimDir);
-            // dotForward = 1 → прямо в цель, -1 → прямо от цели.
-            // Чем ближе к 1 — тем жёстче слежку делаем.
-            float t = Physics.Clamp01((dotForward - (float)Math.Cos(AttackAimBlendDeg * MathF.Deg2Rad)) /
-                                      (1f - (float)Math.Cos(AttackAimBlendDeg * MathF.Deg2Rad)));
+            float blendCos = (float)Math.Cos(AttackAimBlendDeg * MathF.Deg2Rad);
+            float t = Physics.Clamp01((dotForward - blendCos) / (1f - blendCos));
             float aimSpeed = AttackAimSpeedSoft + (AttackAimSpeedHard - AttackAimSpeedSoft) * t;
 
             AimAt(s, aimDir, dtReal, aimSpeed);
+
+            float speedFraction = Physics.Clamp01((dist - 5f) / AttackBrakeDist);
+            float desiredSpeed = Math.Max(
+                Settings.CurrentProfile.TMax * AttackMinSpeedFrac,
+                Settings.CurrentProfile.TMax * speedFraction);
+            if (s.T > desiredSpeed)
+                Physics.AdjustThrottle(s, -Config.ThrottleRate * dtReal);
+            else
+                Physics.AdjustThrottle(s, Config.ThrottleRate * dtReal);
         }
 
         // ── Obstacle avoidance ─────────────────────────────────────────────
@@ -251,9 +267,7 @@ namespace FpvDroneMod
             float safeZ        = Math.Max(-0.999f, Math.Min(0.999f, dir.Z));
             float desiredTheta = (float)Math.Asin(safeZ);
 
-            float dPsi = desiredPsi - s.Psi;
-            while (dPsi >  MathF.Pi) dPsi -= 2f * MathF.Pi;
-            while (dPsi < -MathF.Pi) dPsi += 2f * MathF.Pi;
+            float dPsi = NormalizeAngleSigned(desiredPsi - s.Psi);
 
             float k = Math.Min(1f, dt * speed);
             s.Psi   += dPsi * k;
@@ -262,5 +276,16 @@ namespace FpvDroneMod
                 -Settings.CurrentProfile.ThetaMax,
                 Settings.CurrentProfile.ThetaMax);
         }
+
+        private static float NormalizeAngleSigned(float angle)
+        {
+            float twoPi = 2f * MathF.Pi;
+            float wrapped = angle + MathF.Pi;
+            wrapped = wrapped - twoPi * MathF.Floor(wrapped / twoPi);
+            return wrapped - MathF.Pi;
+        }
+
+        private static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+        private static bool IsFiniteVec(Vector3 v) => IsFinite(v.X) && IsFinite(v.Y) && IsFinite(v.Z);
     }
 }

@@ -32,6 +32,7 @@ namespace FpvDroneMod
         private bool _mouseFirstFrame = true;
         private bool _lockButtonWasDown;
         private bool _attackButtonWasDown;
+        private float _camForwardErrorLogCooldown;
 
         // Realtime stopwatch — used for slow-mo, lost timer, recovery, etc. so
         // we don't depend on Game.LastFrameTime which is in game-time and gets
@@ -171,7 +172,8 @@ namespace FpvDroneMod
             if (e.KeyCode == Keys.J)
             {
                 // Cycle through visual modes: Normal -> Thermal -> Night Vision -> Normal.
-                _state.Vision = (VisionMode)(((int)_state.Vision + 1) % 3);
+                int visionModesCount = Enum.GetValues(typeof(VisionMode)).Length;
+                _state.Vision = (VisionMode)(((int)_state.Vision + 1) % visionModesCount);
 
                 if (_state.Vision == VisionMode.Normal)
                 {
@@ -187,6 +189,10 @@ namespace FpvDroneMod
                 {
                     Natives.SetSeethrough(false);
                     Natives.SetNightvision(true);
+                }
+                else
+                {
+                    throw new InvalidOperationException($"Unhandled vision mode: {_state.Vision}");
                 }
                 return;
             }
@@ -223,8 +229,13 @@ namespace FpvDroneMod
             TimeSpan now = _rt.Elapsed;
             float dtReal = (float)(now - _rtPrev).TotalSeconds;
             if (dtReal < 0f) dtReal = 0f;
-            if (dtReal > Config.DtClampMax) dtReal = Config.DtClampMax;
+            if (dtReal > Config.DtClampMax)
+            {
+                Log.Warn($"Large realtime dt detected: {dtReal:F3}s (clamped to {Config.DtClampMax:F3}s)");
+                dtReal = Config.DtClampMax;
+            }
             _rtPrev = now;
+            _camForwardErrorLogCooldown = Math.Max(0f, _camForwardErrorLogCooldown - dtReal);
 
             // Settings menu can be drawn whether we're flying or not. When
             // open it absorbs all input via OnKeyDown.
@@ -286,7 +297,7 @@ namespace FpvDroneMod
 
             // 13.8 Battery
             Physics.DrainBattery(_state, dtGame);
-            bool batteryDead = _state.B <= 0.0001f;
+            bool batteryDead = _state.B <= 0f;
             if (batteryDead && _state.MotorsDeadBannerT <= 0f) _state.MotorsDeadBannerT = 0.5f;
             _state.MotorsDeadBannerT = Math.Max(0f, _state.MotorsDeadBannerT - dtReal);
             _state.SignalRestoredBannerT = Math.Max(0f, _state.SignalRestoredBannerT - dtReal);
@@ -380,8 +391,13 @@ namespace FpvDroneMod
                     if (fwd.LengthSquared() > 0.5f) _state.F = fwd;
                     else _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    if (_camForwardErrorLogCooldown <= 0f)
+                    {
+                        Log.Warn($"fpvCam.ForwardVector failed with {ex.GetType().Name}; falling back to analytical forward");
+                        _camForwardErrorLogCooldown = 1f;
+                    }
                     _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
                 }
             }
@@ -571,8 +587,23 @@ namespace FpvDroneMod
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern bool SetCursorPos(int X, int Y);
 
-        public static int CenterX => System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width  / 2;
-        public static int CenterY => System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height / 2;
+        public static int CenterX
+        {
+            get
+            {
+                var primary = System.Windows.Forms.Screen.PrimaryScreen;
+                return primary != null ? primary.Bounds.Width / 2 : 960;
+            }
+        }
+
+        public static int CenterY
+        {
+            get
+            {
+                var primary = System.Windows.Forms.Screen.PrimaryScreen;
+                return primary != null ? primary.Bounds.Height / 2 : 540;
+            }
+        }
 
         // Returns (dx, dy) in pixels since last call, then snaps cursor back
         // to screen centre. The first call after Reset() returns (0, 0) so the
