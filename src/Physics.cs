@@ -7,6 +7,12 @@ namespace FpvDroneMod
     // Pure functions over DroneState; no engine calls.
     internal static class Physics
     {
+        static Physics()
+        {
+            System.Diagnostics.Debug.Assert((ForwardFromYawPitch(0f, 0f) - new Vector3(0f, 1f, 0f)).LengthSquared() < 1e-5f);
+            System.Diagnostics.Debug.Assert((ForwardFromYawPitch(MathF.Pi * 0.5f, 0f) - new Vector3(-1f, 0f, 0f)).LengthSquared() < 1e-5f);
+        }
+
         // Analytical fallback for the camera's forward vector. Used as the
         // first-frame seed (engine hasn't registered the script camera yet,
         // so Camera.ForwardVector NREs in NativeMemory.GetCameraAddress) and
@@ -31,10 +37,10 @@ namespace FpvDroneMod
 
         public static float Lerp(float a, float b, float k) => a + (b - a) * Clamp01(k);
 
-        public static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
+        public static float Clamp01(float v) => float.IsNaN(v) ? 0f : (v < 0f ? 0f : (v > 1f ? 1f : v));
 
         public static float Clamp(float v, float lo, float hi)
-            => v < lo ? lo : (v > hi ? hi : v);
+            => float.IsNaN(v) ? lo : (v < lo ? lo : (v > hi ? hi : v));
 
         // 4.1 Yaw / pitch — frame-rate independent (multiplied by dt*60).
         // Sign convention (FPS-natural):
@@ -90,7 +96,11 @@ namespace FpvDroneMod
         public static void IntegrateMotion(DroneState s, float vVert, float dt, bool batteryDead)
         {
             var prof = Settings.CurrentProfile;
-            Vector3 F = s.F; // refreshed earlier this tick
+            Vector3 F = s.AutopilotFlightDir ?? s.F; // autopilot can move independently from camera look direction
+            if (!IsFiniteVec(F) || F.LengthSquared() < 1e-6f)
+                F = Vector3.RelativeFront;
+            else
+                F = Vector3.Normalize(F);
 
             // 6.3 V_sink when low battery (only if not fully dead — once dead T=0 anyway)
             Vector3 vSink = Vector3.Zero;
@@ -117,9 +127,20 @@ namespace FpvDroneMod
             Vector3 fDrag = -vPhys * cDrag * speed;
 
             s.V = vPhys + fDrag * dt;
+            if (!IsFiniteVec(s.V))
+            {
+                Log.Warn("Physics: non-finite velocity after integration; resetting velocity");
+                s.V = Vector3.Zero;
+            }
 
             // 4.9 position
             s.P = s.P + s.V * dt;
+            if (!IsFiniteVec(s.P))
+            {
+                Log.Error("Physics: non-finite position after integration; resetting to spawn");
+                s.P = s.Spawn;
+                s.V = Vector3.Zero;
+            }
         }
 
         public static Vector3 Lerp(Vector3 a, Vector3 b, float k)
@@ -139,5 +160,8 @@ namespace FpvDroneMod
         {
             s.T = Clamp(s.T + delta, Config.TMin, Settings.CurrentProfile.TMax);
         }
+
+        private static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+        private static bool IsFiniteVec(Vector3 v) => IsFinite(v.X) && IsFinite(v.Y) && IsFinite(v.Z);
     }
 }

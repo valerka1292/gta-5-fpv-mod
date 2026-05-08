@@ -33,6 +33,10 @@ namespace FpvDroneMod
         private bool _lockButtonWasDown;
         private bool _attackButtonWasDown;
         private float _camForwardErrorLogCooldown;
+        private float _crosshairRayTimer;
+        private Vector3 _crosshairLastForward = Vector3.RelativeFront;
+        private bool _crosshairHasLastForward;
+        private const float CrosshairRayInterval = 0.1f;
 
         // Realtime stopwatch — used for slow-mo, lost timer, recovery, etc. so
         // we don't depend on Game.LastFrameTime which is in game-time and gets
@@ -91,6 +95,8 @@ namespace FpvDroneMod
             _mouseFirstFrame = true;
             _lockButtonWasDown = false;
             _attackButtonWasDown = false;
+            _crosshairRayTimer = 0f;
+            _crosshairHasLastForward = false;
             MouseCapture.Recenter();
             _flying = true;
             _state.Spooling     = true;
@@ -322,14 +328,29 @@ namespace FpvDroneMod
             (dmx, dmy) = InputDistortion.Apply(dmx, dmy, _state.I, _state.Stage);
             _state.LastDmx = dmx; _state.LastDmy = dmy;
 
+            // Refresh forward from the previous frame's camera rotation before
+            // target acquisition/autopilot reads it.
+            RefreshCameraForward();
+
             // Loitering-munition target search: cone scan around the FPV reticle.
             if (_state.AutopilotMode == AutoPilotState.Off)
             {
-                _state.PotentialTarget = GetTargetInCrosshair(ped);
+                _crosshairRayTimer -= dtReal;
+                bool crosshairMoved = !_crosshairHasLastForward ||
+                    Vector3.Dot(_crosshairLastForward, _state.F) < 0.999f;
+                if (_crosshairRayTimer <= 0f || crosshairMoved)
+                {
+                    _state.PotentialTarget = GetTargetInCrosshair(ped);
+                    _crosshairLastForward = _state.F;
+                    _crosshairHasLastForward = true;
+                    _crosshairRayTimer = CrosshairRayInterval;
+                }
             }
             else
             {
                 _state.PotentialTarget = null;
+                _crosshairRayTimer = 0f;
+                _crosshairHasLastForward = false;
             }
 
             // Autopilot controls: RMB toggles lock, LMB starts the terminal attack.
@@ -342,17 +363,23 @@ namespace FpvDroneMod
 
             if (lockPressed)
             {
-                if (_state.AutopilotMode == AutoPilotState.Off && _state.PotentialTarget != null)
+                if (_state.Spooling)
+                {
+                    Notification.PostTicker("FPV: motors spooling...", false, false);
+                }
+                else if (_state.AutopilotMode == AutoPilotState.Off && _state.PotentialTarget != null)
                 {
                     _state.LockedTarget = _state.PotentialTarget;
                     _state.AutopilotMode = AutoPilotState.Tracking;
                     _state.TargetLostTimer = 0f;
+                    _state.AutopilotFlightDir = null;
+                    _state.SmoothedRearDir = new Vector3(0f, -1f, 0f);
+                    _state.SensorNextZone = 0;
+                    _state.SensorReady = false;
                 }
                 else if (_state.AutopilotMode != AutoPilotState.Off)
                 {
-                    _state.AutopilotMode = AutoPilotState.Off;
-                    _state.LockedTarget = null;
-                    _state.TargetLostTimer = 0f;
+                    Autopilot.ReleaseTarget(_state);
                 }
             }
 
@@ -379,32 +406,7 @@ namespace FpvDroneMod
             // matter which Euler-angle convention SHVDN/GTA actually use.
             // Reading ForwardVector can NRE on the very first frame (engine
             // hasn't registered the cam yet) — fall back to analytical.
-            if (_fpvCam != null && _fpvCam.Exists())
-            {
-                _fpvCam.Rotation = new Vector3(
-                    _state.Theta  * MathF.Rad2Deg,
-                    _state.PhiCam * MathF.Rad2Deg,
-                    _state.Psi    * MathF.Rad2Deg);
-                try
-                {
-                    Vector3 fwd = _fpvCam.ForwardVector;
-                    if (fwd.LengthSquared() > 0.5f) _state.F = fwd;
-                    else _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
-                }
-                catch (Exception ex)
-                {
-                    if (_camForwardErrorLogCooldown <= 0f)
-                    {
-                        Log.Warn($"fpvCam.ForwardVector failed with {ex.GetType().Name}; falling back to analytical forward");
-                        _camForwardErrorLogCooldown = 1f;
-                    }
-                    _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
-                }
-            }
-            else
-            {
-                _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
-            }
+            RefreshCameraForward();
 
             // 13.24-30 Velocity / position integration. Battery dead → motors
             // off (T=0), drag mode = dead.
@@ -529,7 +531,7 @@ namespace FpvDroneMod
                 var ray = World.Raycast(
                     start,
                     end,
-                    IntersectFlags.Everything,
+                    IntersectFlags.Map | IntersectFlags.Vehicles | IntersectFlags.Peds,
                     playerPed
                 );
 
@@ -555,6 +557,36 @@ namespace FpvDroneMod
             {
                 Log.Error("GetTargetInCrosshair failed", ex);
                 return null;
+            }
+        }
+
+        private void RefreshCameraForward()
+        {
+            if (_fpvCam != null && _fpvCam.Exists())
+            {
+                _fpvCam.Rotation = new Vector3(
+                    _state.Theta  * MathF.Rad2Deg,
+                    _state.PhiCam * MathF.Rad2Deg,
+                    _state.Psi    * MathF.Rad2Deg);
+                try
+                {
+                    Vector3 fwd = _fpvCam.ForwardVector;
+                    if (fwd.LengthSquared() > 0.5f) _state.F = fwd;
+                    else _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+                }
+                catch (Exception ex)
+                {
+                    if (_camForwardErrorLogCooldown <= 0f)
+                    {
+                        Log.Warn($"fpvCam.ForwardVector failed with {ex.GetType().Name}; falling back to analytical forward");
+                        _camForwardErrorLogCooldown = 1f;
+                    }
+                    _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
+                }
+            }
+            else
+            {
+                _state.F = Physics.ForwardFromYawPitch(_state.Psi, _state.Theta);
             }
         }
     }

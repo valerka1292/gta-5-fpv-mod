@@ -47,6 +47,12 @@ namespace FpvDroneMod
         public Entity PotentialTarget = null;
         public Entity LockedTarget = null;
         public float TargetLostTimer = 0f;
+        public Vector3? AutopilotFlightDir = null; // movement vector independent from camera look direction
+        public Vector3 SmoothedRearDir = new Vector3(0f, -1f, 0f);
+        public float[] SensorClearances = new float[5];
+        public Vector3[] SensorPushDirs = new Vector3[5];
+        public int SensorNextZone = 0;
+        public bool SensorReady = false;
 
         public Vector3 Spawn;        // P_spawn
 

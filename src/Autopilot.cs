@@ -28,8 +28,8 @@ namespace FpvDroneMod
     internal static class Autopilot
     {
         // ── Tracking ──────────────────────────────────────────────────────
-        private const float TrackAltOffset   = 30f;   // м выше цели
-        private const float TrackRearOffset  = 22f;   // м позади цели
+        private const float TrackAltOffset   = 30f;   // m above target
+        private const float TrackRearOffset  = 22f;   // m behind target; look-down angle is atan2(30,22)=53.7deg
         private const float TrackHoverRadius = 4f;    // м — зона зависания
         private const float TrackSpeedFrac   = 0.72f; // доля TMax при слежении
         private const float TrackAimSpeed    = 2.2f;  // плавность поворота
@@ -66,31 +66,25 @@ namespace FpvDroneMod
 
             if (s.LockedTarget == null || !s.LockedTarget.Exists() || s.LockedTarget.IsDead)
             {
-                s.AutopilotMode = AutoPilotState.Off;
-                s.LockedTarget  = null;
-                return;
-            }
-
-            // LoS check: ray drone→target, target entity excluded from hit test.
-            // Map + Objects чтобы здания и крупные пропы блокировали, но
-            // мелкие пропы/автомобили не роняли лок попусту.
-            var losRay = World.Raycast(
-                s.P,
-                s.LockedTarget.Position,
-                IntersectFlags.Map | IntersectFlags.Objects,
-                s.LockedTarget);
-
-            if (losRay.DidHit) s.TargetLostTimer += dtReal;
-            else               s.TargetLostTimer  = 0f;
-
-            if (s.TargetLostTimer > LosDropTime)
-            {
-                s.AutopilotMode = AutoPilotState.Off;
-                s.LockedTarget  = null;
+                ReleaseTarget(s);
                 return;
             }
 
             Vector3 tgtPos = s.LockedTarget.Position;
+            if (!IsFiniteVec(tgtPos))
+            {
+                ReleaseTarget(s);
+                return;
+            }
+
+            if (HasLineOfSight(s, s.LockedTarget)) s.TargetLostTimer = 0f;
+            else                                   s.TargetLostTimer += dtReal;
+
+            if (s.TargetLostTimer > LosDropTime)
+            {
+                ReleaseTarget(s);
+                return;
+            }
 
             switch (s.AutopilotMode)
             {
@@ -113,24 +107,35 @@ namespace FpvDroneMod
                 s.LockedTarget.Velocity.X,
                 s.LockedTarget.Velocity.Y, 0f);
 
-            Vector3 rearDir;
+            Vector3 rawRearDir;
             if (velXY.LengthSquared() > 1.5f)
             {
-                rearDir = -Vector3.Normalize(velXY);
+                rawRearDir = -Vector3.Normalize(velXY);
             }
             else
             {
-                Vector3 toTgtXY = new Vector3(
-                    tgtPos.X - s.P.X, tgtPos.Y - s.P.Y, 0f);
-                rearDir = toTgtXY.LengthSquared() > 0.001f
-                    ? -Vector3.Normalize(toTgtXY)
+                Vector3 droneForwardXY = new Vector3(s.F.X, s.F.Y, 0f);
+                rawRearDir = droneForwardXY.LengthSquared() > 0.001f
+                    ? -Vector3.Normalize(droneForwardXY)
                     : new Vector3(0f, -1f, 0f);
             }
+            if (!IsFiniteVec(rawRearDir) || rawRearDir.LengthSquared() < 0.001f)
+                rawRearDir = new Vector3(0f, -1f, 0f);
+
+            if (!IsFiniteVec(s.SmoothedRearDir) || s.SmoothedRearDir.LengthSquared() < 0.001f)
+                s.SmoothedRearDir = rawRearDir;
+
+            float tgtSpeed = s.LockedTarget.Velocity.Length();
+            if (!IsFinite(tgtSpeed)) tgtSpeed = 0f;
+            float alpha = Physics.Clamp01(0.04f + tgtSpeed * 0.002f) * (1f + dtReal * 2f);
+            Vector3 blendedRear = s.SmoothedRearDir + (rawRearDir - s.SmoothedRearDir) * alpha;
+            if (IsFiniteVec(blendedRear) && blendedRear.LengthSquared() > 0.001f)
+                s.SmoothedRearDir = Vector3.Normalize(blendedRear);
 
             // Целевая позиция зависания: сзади и выше цели.
             Vector3 desiredPos = tgtPos
                 + new Vector3(0f, 0f, TrackAltOffset)
-                + rearDir * TrackRearOffset;
+                + s.SmoothedRearDir * TrackRearOffset;
 
             Vector3 toDesired = desiredPos - s.P;
             float   dist      = toDesired.Length();
@@ -143,6 +148,7 @@ namespace FpvDroneMod
             // Уклонение от препятствий (деревья, стены, столбы).
             // В режиме атаки не вызываем — дрон должен идти прямо.
             moveDir = AvoidObstacles(s, moveDir, playerPed);
+            s.AutopilotFlightDir = moveDir;
 
             // Пропорциональная скорость: максимум далеко, тормозим у зависания.
             float cruiseSpeed = Settings.CurrentProfile.TMax * TrackSpeedFrac;
@@ -151,13 +157,20 @@ namespace FpvDroneMod
                 speed *= dist / TrackHoverRadius;
 
             s.T = Physics.Clamp(speed, 0f, Settings.CurrentProfile.TMax);
-            AimAt(s, moveDir, dtReal, TrackAimSpeed);
+
+            Vector3 toTarget = tgtPos - s.P;
+            Vector3 aimDir = toTarget.LengthSquared() > 0.001f
+                ? Vector3.Normalize(toTarget)
+                : moveDir;
+            AimAt(s, aimDir, dtReal, TrackAimSpeed);
         }
 
         // ── Attacking ──────────────────────────────────────────────────────
         private static void UpdateAttacking(
             DroneState s, Vector3 tgtPos, float dtReal)
         {
+            s.AutopilotFlightDir = null;
+
             // Упреждение: вычислить точку встречи.
             Vector3 toTgt = tgtPos - s.P;
             float   dist  = toTgt.Length();
@@ -206,6 +219,9 @@ namespace FpvDroneMod
         private static Vector3 AvoidObstacles(
             DroneState s, Vector3 moveDir, Ped ignorePed)
         {
+            if (!IsFiniteVec(moveDir) || moveDir.LengthSquared() < 1e-6f)
+                return s.F;
+            moveDir = Vector3.Normalize(moveDir);
             // Ортонормальный базис относительно вектора движения.
             Vector3 worldUp = new Vector3(0f, 0f, 1f);
             Vector3 right   = Vector3.Cross(moveDir, worldUp);
@@ -214,11 +230,11 @@ namespace FpvDroneMod
             right = Vector3.Normalize(right);
 
             float speed     = s.V.Length();
+            if (!IsFinite(speed)) speed = 0f;
             float fwdLen    = ObstFwdBase + speed * ObstFwdExtra;
             float diagonalLen = fwdLen * 0.65f;
 
             // 5 лучей: (направление, длина, вес уклонения)
-            int N = 5;
             Vector3[] probeDir = {
                 moveDir,
                 -right,
@@ -229,26 +245,47 @@ namespace FpvDroneMod
             float[] probeLen = { fwdLen, ObstSideLen, ObstSideLen, ObstUpLen, diagonalLen };
             float[] probeW   = { 1.4f,   0.8f,        0.8f,        0.55f,     0.6f };
 
+            int i = s.SensorNextZone;
+            if (i < 0 || i >= probeDir.Length) i = 0;
+            s.SensorNextZone = (i + 1) % probeDir.Length;
+            s.SensorClearances[i] = probeLen[i];
+            s.SensorPushDirs[i] = -probeDir[i];
+
+            var ray = World.Raycast(
+                s.P,
+                s.P + probeDir[i] * probeLen[i],
+                IntersectFlags.Map | IntersectFlags.Objects,
+                ignorePed);
+
+            if (ray.DidHit && (s.LockedTarget == null || ray.HitEntity != s.LockedTarget))
+            {
+                float hitDist = (ray.HitPosition - s.P).Length();
+                s.SensorClearances[i] = IsFinite(hitDist) ? hitDist : probeLen[i];
+
+                Vector3 normal = ray.SurfaceNormal;
+                s.SensorPushDirs[i] = IsFiniteVec(normal) && normal.LengthSquared() > 0.5f
+                    ? Vector3.Normalize(normal)
+                    : -probeDir[i];
+            }
+
+            if (i == probeDir.Length - 1) s.SensorReady = true;
+            if (!s.SensorReady) return moveDir;
+
             Vector3 avoid = Vector3.Zero;
 
-            for (int i = 0; i < N; i++)
+            for (int j = 0; j < probeDir.Length; j++)
             {
-                var ray = World.Raycast(
-                    s.P,
-                    s.P + probeDir[i] * probeLen[i],
-                    IntersectFlags.Map | IntersectFlags.Objects,
-                    ignorePed);
-
-                if (!ray.DidHit) continue;
-
-                // Цель не является препятствием.
-                if (s.LockedTarget != null && ray.HitEntity == s.LockedTarget) continue;
-
-                float hitDist = (ray.HitPosition - s.P).Length();
-                float urgency = 1f - (hitDist / probeLen[i]); // 0..1, сильнее вблизи
+                float clearance = s.SensorClearances[j] > 0f ? s.SensorClearances[j] : probeLen[j];
+                float urgency = 1f - Physics.Clamp01(clearance / probeLen[j]); // 0..1, stronger nearby
                 if (urgency < ObstDeadzone) continue;
 
-                avoid += (-probeDir[i]) * (urgency * probeW[i] * ObstStrength);
+                Vector3 pushDir = s.SensorPushDirs[j];
+                if (!IsFiniteVec(pushDir) || pushDir.LengthSquared() < 0.001f)
+                    pushDir = -probeDir[j];
+                else
+                    pushDir = Vector3.Normalize(pushDir);
+
+                avoid += pushDir * (urgency * probeW[j] * ObstStrength);
             }
 
             if (avoid.LengthSquared() < 0.001f)
@@ -263,6 +300,9 @@ namespace FpvDroneMod
         // ── AimAt ──────────────────────────────────────────────────────────
         private static void AimAt(DroneState s, Vector3 dir, float dt, float speed)
         {
+            if (!IsFiniteVec(dir) || dir.LengthSquared() < 1e-6f) return;
+            dir = Vector3.Normalize(dir);
+
             float desiredPsi   = (float)Math.Atan2(-dir.X, dir.Y);
             float safeZ        = Math.Max(-0.999f, Math.Min(0.999f, dir.Z));
             float desiredTheta = (float)Math.Asin(safeZ);
@@ -275,6 +315,36 @@ namespace FpvDroneMod
                 s.Theta + (desiredTheta - s.Theta) * k,
                 -Settings.CurrentProfile.ThetaMax,
                 Settings.CurrentProfile.ThetaMax);
+        }
+
+        public static void ReleaseTarget(DroneState s)
+        {
+            s.AutopilotMode = AutoPilotState.Off;
+            s.LockedTarget = null;
+            s.TargetLostTimer = 0f;
+            s.AutopilotFlightDir = null;
+            s.SensorNextZone = 0;
+            s.SensorReady = false;
+        }
+
+        private static bool HasLineOfSight(DroneState s, Entity target)
+        {
+            Vector3 center = target.Position;
+            Vector3 top = center + new Vector3(0f, 0f, 1.5f);
+            Vector3 forward = target.ForwardVector;
+            Vector3 front = center + (IsFiniteVec(forward) ? forward * 2f : Vector3.Zero);
+
+            Vector3[] points = { center, top, front };
+            for (int i = 0; i < points.Length; i++)
+            {
+                var ray = World.Raycast(
+                    s.P,
+                    points[i],
+                    IntersectFlags.Map,
+                    target);
+                if (!ray.DidHit) return true;
+            }
+            return false;
         }
 
         private static float NormalizeAngleSigned(float angle)
