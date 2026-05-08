@@ -281,7 +281,7 @@ namespace FpvDroneMod
         {
             float twoPi = 2f * MathF.Pi;
             float wrapped = angle + MathF.Pi;
-            wrapped = wrapped - twoPi * MathF.Floor(wrapped / twoPi);
+            wrapped = wrapped - twoPi * (float)Math.Floor(wrapped / twoPi);
             return wrapped - MathF.Pi;
         }
 
